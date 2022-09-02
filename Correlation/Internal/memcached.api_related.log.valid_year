@@ -1,0 +1,599 @@
+[FUNC] **new** commit e52734366c94475db33d3239f48b4542ec2d9c2f
+Date:   Wed Jul 28 00:15:45 2021 -0700
+
+    core: cache.c cleanups, use queue.h freelist
+    
+    cache constructors/destructors were never used, which just ended up
+    being wasted branches. Since there's no constructor/destructor for cache
+    objects, we can use the memory itself for the freelist.
+    
+    This removes a doubling realloc for the freelist of cache objects and
+    simplifies the code a bunch.
+
+diff --git a/cache.c b/cache.c
+--- a/cache.c
++++ b/cache.c
+@@ -17,31 +18,23 @@
+-const int initial_pool_size = 64;
+-
+-cache_t* cache_create(const char *name, size_t bufsize, size_t align,
+-                      cache_constructor_t* constructor,
+-                      cache_destructor_t* destructor) {
++cache_t* cache_create(const char *name, size_t bufsize, size_t align) {
+     cache_t* ret = calloc(1, sizeof(cache_t));
+     char* nm = strdup(name);
+-    void** ptr = calloc(initial_pool_size, sizeof(void*));
+-    if (ret == NULL || nm == NULL || ptr == NULL ||
++    if (ret == NULL || nm == NULL ||
+         pthread_mutex_init(&ret->mutex, NULL) == -1) {
+         free(ret);
+         free(nm);
+-        free(ptr);
+         return NULL;
+     }
+ 
+     ret->name = nm;
+-    ret->ptr = ptr;
+-    ret->freetotal = initial_pool_size;
+-    ret->constructor = constructor;
+-    ret->destructor = destructor;
++    STAILQ_INIT(&ret->head);
+ 
+ #ifndef NDEBUG
+     ret->bufsize = bufsize + 2 * sizeof(redzone_pattern);
+ #else
+     ret->bufsize = bufsize;
+ #endif
++    assert(ret->bufsize >= sizeof(struct cache_free_s));
+ 
+     return ret;
+ }
+ 
+
+commit e52734366c94475db33d3239f48b4542ec2d9c2f
+Date:   Wed Jul 28 00:15:45 2021 -0700
+
+    core: cache.c cleanups, use queue.h freelist
+    
+    cache constructors/destructors were never used, which just ended up
+    being wasted branches. Since there's no constructor/destructor for cache
+    objects, we can use the memory itself for the freelist.
+    
+    This removes a doubling realloc for the freelist of cache objects and
+    simplifies the code a bunch.
+
+diff --git a/cache.c b/cache.c
+--- a/cache.c
++++ b/cache.c
+@@ -85,36 +75,33 @@
+ void* do_cache_alloc(cache_t *cache) {
+     void *ret;
+     void *object;
+     if (cache->freecurr > 0) {
+-        ret = cache->ptr[--cache->freecurr];
++        ret = STAILQ_FIRST(&cache->head);
++        STAILQ_REMOVE_HEAD(&cache->head, c_next);
+         object = get_object(ret);
++        cache->freecurr--;
+     } else if (cache->limit == 0 || cache->total < cache->limit) {
+         object = ret = malloc(cache->bufsize);
+         if (ret != NULL) {
+             object = get_object(ret);
+ 
+-            if (cache->constructor != NULL &&
+-                cache->constructor(object, NULL, 0) != 0) {
+-                free(ret);
+-                object = NULL;
+-            }
+             cache->total++;
+         }
+     } else {
+         object = NULL;
+     }
+ 
+ #ifndef NDEBUG
+     if (object != NULL) {
+         /* add a simple form of buffer-check */
+         uint64_t *pre = ret;
+         *pre = redzone_pattern;
+         ret = pre+1;
+         memcpy(((char*)ret) + cache->bufsize - (2 * sizeof(redzone_pattern)),
+                &redzone_pattern, sizeof(redzone_pattern));
+     }
+ #endif
+ 
+     return object;
+ }
+ 
+
+[FUNC] **new** commit d0fe0d591b5e9265131ad7371c51dd9b27f634f5
+Date:   Mon Aug 9 15:43:03 2021 -0700
+
+    logger: simplify logging code
+    
+    Adding a new type of log entry required updating code in a bunch of
+    places. Now we use callbacks in the entry structure instead, cutting
+    down the code and some awkwardness. Should also make it easier for
+    plugins/extra systems to add log entries.
+    
+    Moving the writer/parsers to their own section makes the actual logging
+    code easier to follow, as an added bonus.
+
+diff --git a/logger.c b/logger.c
+--- a/logger.c
++++ b/logger.c
+@@ -696,104 +779,27 @@
+ logger *logger_create(void) {
+     L_DEBUG("LOGGER: Creating and linking new logger instance\n");
+     logger *l = calloc(1, sizeof(logger));
+     if (l == NULL) {
+         return NULL;
+     }
+ 
+     l->buf = bipbuf_new(settings.logger_buf_size);
+     if (l->buf == NULL) {
+         free(l);
+         return NULL;
+     }
+ 
+     l->entry_map = default_entries;
+ 
+     pthread_mutex_init(&l->mutex, NULL);
+     pthread_setspecific(logger_key, l);
+ 
+     /* add to list of loggers */
+     logger_link_q(l);
+     return l;
+ }
+ 
+-/* helpers for logger_log */
+-
+-static void _logger_log_evictions(logentry *e, item *it) {
+-    struct logentry_eviction *le = (struct logentry_eviction *) e->data;
+-    le->exptime = (it->exptime > 0) ? (long long int)(it->exptime - current_time) : (long long int) -1;
+-    le->latime = current_time - it->time;
+-    le->it_flags = it->it_flags;
+-    le->nkey = it->nkey;
+-    le->nbytes = it->nbytes;
+-    le->clsid = ITEM_clsid(it);
+-    memcpy(le->key, ITEM_key(it), it->nkey);
+-    e->size = sizeof(struct logentry_eviction) + le->nkey;
+-}
+-#ifdef EXTSTORE
+-/* TODO: When more logging endpoints are done and the extstore API has matured
+- * more, this could be merged with above and print different types of
+- * expulsion events.
+- */
+-static void _logger_log_ext_write(logentry *e, item *it, uint8_t bucket) {
+-    struct logentry_ext_write *le = (struct logentry_ext_write *) e->data;
+-    le->exptime = (it->exptime > 0) ? (long long int)(it->exptime - current_time) : (long long int) -1;
+-    le->latime = current_time - it->time;
+-    le->it_flags = it->it_flags;
+-    le->nkey = it->nkey;
+-    le->clsid = ITEM_clsid(it);
+-    le->bucket = bucket;
+-    memcpy(le->key, ITEM_key(it), it->nkey);
+-    e->size = sizeof(struct logentry_ext_write) + le->nkey;
+-}
+-#endif
+-/* 0 == nf, 1 == found. 2 == flushed. 3 == expired.
+- * might be useful to store/print the flags an item has?
+- * could also collapse this and above code into an "item status" struct. wait
+- * for more endpoints to be written before making it generic, though.
+- */
+-static void _logger_log_item_get(logentry *e, const int was_found, const char *key,
+-        const int nkey, const int nbytes, const uint8_t clsid, const int sfd) {
+-    struct logentry_item_get *le = (struct logentry_item_get *) e->data;
+-    le->was_found = was_found;
+-    le->nkey = nkey;
+-    le->nbytes = nbytes;
+-    le->clsid = clsid;
+-    memcpy(le->key, key, nkey);
+-    le->sfd = sfd;
+-    e->size = sizeof(struct logentry_item_get) + nkey;
+-}
+-
+-static void _logger_log_item_store(logentry *e, const enum store_item_type status,
+-        const int comm, char *key, const int nkey, const int nbytes, rel_time_t ttl,
+-        const uint8_t clsid, int sfd) {
+-    struct logentry_item_store *le = (struct logentry_item_store *) e->data;
+-    le->status = status;
+-    le->cmd = comm;
+-    le->nkey = nkey;
+-    le->nbytes = nbytes;
+-    le->clsid = clsid;
+-    if (ttl != 0) {
+-        le->ttl = ttl - current_time;
+-    } else {
+-        le->ttl = 0;
+-    }
+-    memcpy(le->key, key, nkey);
+-    le->sfd = sfd;
+-    e->size = sizeof(struct logentry_item_store) + nkey;
+-}
+-
+-static void _logger_log_conn_event(logentry *e, struct sockaddr *addr,
+-        enum network_transport transport, enum close_reasons reason, int sfd) {
+-    struct logentry_conn_event *le = (struct logentry_conn_event *) e->data;
+-
+-    memcpy(&le->addr, addr, sizeof(struct sockaddr));
+-    le->sfd = sfd;
+-    le->transport = transport;
+-    le->reason = reason;
+-    e->size = sizeof(struct logentry_conn_event);
+-}
+-
+ /* Public function for logging an entry.
+  * Tries to encapsulate as much of the formatting as possible to simplify the
+  * caller's code.
+  */
+
+[NA] **new** commit 617d7cd64d04698b76fee74882627690017e20ad
+Date:   Sat May 29 22:19:43 2021 -0700
+
+    Implement LOG_CONNEVENTS watcher flag for connection state transitions
+    
+    Add support for `watch connevents` to report opened (`conn_new`)
+    and closed (`conn_close`) client connections. Event log lines indicate
+    the connection's remote IP, remote port, and transport type.
+    `conn_close` events additionally supply a reason for the closing the
+    connection.
+
+diff --git a/logger.c b/logger.c
+--- a/logger.c
++++ b/logger.c
+@@ -610,93 +689,104 @@
+ logger *logger_create(void) {
+     L_DEBUG("LOGGER: Creating and linking new logger instance\n");
+     logger *l = calloc(1, sizeof(logger));
+     if (l == NULL) {
+         return NULL;
+     }
+ 
+     l->buf = bipbuf_new(settings.logger_buf_size);
+     if (l->buf == NULL) {
+         free(l);
+         return NULL;
+     }
+ 
+     l->entry_map = default_entries;
+ 
+     pthread_mutex_init(&l->mutex, NULL);
+     pthread_setspecific(logger_key, l);
+ 
+     /* add to list of loggers */
+     logger_link_q(l);
+     return l;
+ }
+ 
+ /* helpers for logger_log */
+ 
+ static void _logger_log_evictions(logentry *e, item *it) {
+     struct logentry_eviction *le = (struct logentry_eviction *) e->data;
+     le->exptime = (it->exptime > 0) ? (long long int)(it->exptime - current_time) : (long long int) -1;
+     le->latime = current_time - it->time;
+     le->it_flags = it->it_flags;
+     le->nkey = it->nkey;
+     le->nbytes = it->nbytes;
+     le->clsid = ITEM_clsid(it);
+     memcpy(le->key, ITEM_key(it), it->nkey);
+     e->size = sizeof(struct logentry_eviction) + le->nkey;
+ }
+ #ifdef EXTSTORE
+ /* TODO: When more logging endpoints are done and the extstore API has matured
+  * more, this could be merged with above and print different types of
+  * expulsion events.
+  */
+ static void _logger_log_ext_write(logentry *e, item *it, uint8_t bucket) {
+     struct logentry_ext_write *le = (struct logentry_ext_write *) e->data;
+     le->exptime = (it->exptime > 0) ? (long long int)(it->exptime - current_time) : (long long int) -1;
+     le->latime = current_time - it->time;
+     le->it_flags = it->it_flags;
+     le->nkey = it->nkey;
+     le->clsid = ITEM_clsid(it);
+     le->bucket = bucket;
+     memcpy(le->key, ITEM_key(it), it->nkey);
+     e->size = sizeof(struct logentry_ext_write) + le->nkey;
+ }
+ #endif
+ /* 0 == nf, 1 == found. 2 == flushed. 3 == expired.
+  * might be useful to store/print the flags an item has?
+  * could also collapse this and above code into an "item status" struct. wait
+  * for more endpoints to be written before making it generic, though.
+  */
+ static void _logger_log_item_get(logentry *e, const int was_found, const char *key,
+         const int nkey, const int nbytes, const uint8_t clsid, const int sfd) {
+     struct logentry_item_get *le = (struct logentry_item_get *) e->data;
+     le->was_found = was_found;
+     le->nkey = nkey;
+     le->nbytes = nbytes;
+     le->clsid = clsid;
+     memcpy(le->key, key, nkey);
+     le->sfd = sfd;
+     e->size = sizeof(struct logentry_item_get) + nkey;
+ }
+ 
+ static void _logger_log_item_store(logentry *e, const enum store_item_type status,
+         const int comm, char *key, const int nkey, const int nbytes, rel_time_t ttl,
+         const uint8_t clsid, int sfd) {
+     struct logentry_item_store *le = (struct logentry_item_store *) e->data;
+     le->status = status;
+     le->cmd = comm;
+     le->nkey = nkey;
+     le->nbytes = nbytes;
+     le->clsid = clsid;
+     if (ttl != 0) {
+         le->ttl = ttl - current_time;
+     } else {
+         le->ttl = 0;
+     }
+     memcpy(le->key, key, nkey);
+     le->sfd = sfd;
+     e->size = sizeof(struct logentry_item_store) + nkey;
+ }
+ 
++static void _logger_log_conn_event(logentry *e, struct sockaddr *addr,
++        enum network_transport transport, enum close_reasons reason, int sfd) {
++    struct logentry_conn_event *le = (struct logentry_conn_event *) e->data;
++
++    memcpy(&le->addr, addr, sizeof(struct sockaddr));
++    le->sfd = sfd;
++    le->transport = transport;
++    le->reason = reason;
++    e->size = sizeof(struct logentry_conn_event);
++}
++
+ /* Public function for logging an entry.
+  * Tries to encapsulate as much of the formatting as possible to simplify the
+  * caller's code.
+  */
+
+[NA] **new** commit a54f34f34c3ddef3f6e13f62f3ab673f681cac95
+Date:   Thu May 20 22:20:01 2021 -0700
+
+    Report item sizes for fetch, mutation, and eviction watchers
+    
+    This adds a new field `size` to logger entry lines for item_get,
+    item_store, and eviction events indicating the size of the associated
+    item in bytes.
+
+diff --git a/logger.c b/logger.c
+--- a/logger.c
++++ b/logger.c
+@@ -607,89 +610,93 @@
+ logger *logger_create(void) {
+     L_DEBUG("LOGGER: Creating and linking new logger instance\n");
+     logger *l = calloc(1, sizeof(logger));
+     if (l == NULL) {
+         return NULL;
+     }
+ 
+     l->buf = bipbuf_new(settings.logger_buf_size);
+     if (l->buf == NULL) {
+         free(l);
+         return NULL;
+     }
+ 
+     l->entry_map = default_entries;
+ 
+     pthread_mutex_init(&l->mutex, NULL);
+     pthread_setspecific(logger_key, l);
+ 
+     /* add to list of loggers */
+     logger_link_q(l);
+     return l;
+ }
+ 
+ /* helpers for logger_log */
+ 
+ static void _logger_log_evictions(logentry *e, item *it) {
+     struct logentry_eviction *le = (struct logentry_eviction *) e->data;
+     le->exptime = (it->exptime > 0) ? (long long int)(it->exptime - current_time) : (long long int) -1;
+     le->latime = current_time - it->time;
+     le->it_flags = it->it_flags;
+     le->nkey = it->nkey;
++    le->nbytes = it->nbytes;
+     le->clsid = ITEM_clsid(it);
+     memcpy(le->key, ITEM_key(it), it->nkey);
+     e->size = sizeof(struct logentry_eviction) + le->nkey;
+ }
+ #ifdef EXTSTORE
+ /* TODO: When more logging endpoints are done and the extstore API has matured
+  * more, this could be merged with above and print different types of
+  * expulsion events.
+  */
+ static void _logger_log_ext_write(logentry *e, item *it, uint8_t bucket) {
+     struct logentry_ext_write *le = (struct logentry_ext_write *) e->data;
+     le->exptime = (it->exptime > 0) ? (long long int)(it->exptime - current_time) : (long long int) -1;
+     le->latime = current_time - it->time;
+     le->it_flags = it->it_flags;
+     le->nkey = it->nkey;
+     le->clsid = ITEM_clsid(it);
+     le->bucket = bucket;
+     memcpy(le->key, ITEM_key(it), it->nkey);
+     e->size = sizeof(struct logentry_ext_write) + le->nkey;
+ }
+ #endif
+ /* 0 == nf, 1 == found. 2 == flushed. 3 == expired.
+  * might be useful to store/print the flags an item has?
+  * could also collapse this and above code into an "item status" struct. wait
+  * for more endpoints to be written before making it generic, though.
+  */
+ static void _logger_log_item_get(logentry *e, const int was_found, const char *key,
+-        const int nkey, const uint8_t clsid, const int sfd) {
++        const int nkey, const int nbytes, const uint8_t clsid, const int sfd) {
+     struct logentry_item_get *le = (struct logentry_item_get *) e->data;
+     le->was_found = was_found;
+     le->nkey = nkey;
++    le->nbytes = nbytes;
+     le->clsid = clsid;
+     memcpy(le->key, key, nkey);
+     le->sfd = sfd;
+     e->size = sizeof(struct logentry_item_get) + nkey;
+ }
+ 
+ static void _logger_log_item_store(logentry *e, const enum store_item_type status,
+-        const int comm, char *key, const int nkey, rel_time_t ttl, const uint8_t clsid, int sfd) {
++        const int comm, char *key, const int nkey, const int nbytes, rel_time_t ttl,
++        const uint8_t clsid, int sfd) {
+     struct logentry_item_store *le = (struct logentry_item_store *) e->data;
+     le->status = status;
+     le->cmd = comm;
+     le->nkey = nkey;
++    le->nbytes = nbytes;
+     le->clsid = clsid;
+     if (ttl != 0) {
+         le->ttl = ttl - current_time;
+     } else {
+         le->ttl = 0;
+     }
+     memcpy(le->key, key, nkey);
+     le->sfd = sfd;
+     e->size = sizeof(struct logentry_item_store) + nkey;
+ }
+ 
+ /* Public function for logging an entry.
+  * Tries to encapsulate as much of the formatting as possible to simplify the
+  * caller's code.
+  */
+
+commit e52734366c94475db33d3239f48b4542ec2d9c2f
+Date:   Wed Jul 28 00:15:45 2021 -0700
+
+    core: cache.c cleanups, use queue.h freelist
+    
+    cache constructors/destructors were never used, which just ended up
+    being wasted branches. Since there's no constructor/destructor for cache
+    objects, we can use the memory itself for the freelist.
+    
+    This removes a doubling realloc for the freelist of cache objects and
+    simplifies the code a bunch.
+
+diff --git a/cache.c b/cache.c
+--- a/cache.c
++++ b/cache.c
+@@ -63,14 +56,11 @@
+ void cache_destroy(cache_t *cache) {
+-    while (cache->freecurr > 0) {
+-        void *ptr = cache->ptr[--cache->freecurr];
+-        if (cache->destructor) {
+-            cache->destructor(get_object(ptr), NULL);
+-        }
+-        free(ptr);
++    while (!STAILQ_EMPTY(&cache->head)) {
++        struct cache_free_s *o = STAILQ_FIRST(&cache->head);
++        STAILQ_REMOVE_HEAD(&cache->head, c_next);
++        free(o);
+     }
+     free(cache->name);
+-    free(cache->ptr);
+     pthread_mutex_destroy(&cache->mutex);
+     free(cache);
+ }
+ 
+
+[FUNC] **new** commit 894e4c16b5162e25ce649cf8a57dfad250965ab0
+Date:   Wed Jan 12 23:18:35 2022 -0800
+
+    core: make object cache LIFO
+    
+    was originally LIFO and I broke that when switching to the queue.h code.
+    This is friendlier for cache.
+
+diff --git a/cache.c b/cache.c
+--- a/cache.c
++++ b/cache.c
+@@ -114,27 +114,27 @@
+ void do_cache_free(cache_t *cache, void *ptr) {
+ #ifndef NDEBUG
+     /* validate redzone... */
+     if (memcmp(((char*)ptr) + cache->bufsize - (2 * sizeof(redzone_pattern)),
+                &redzone_pattern, sizeof(redzone_pattern)) != 0) {
+         raise(SIGABRT);
+         cache_error = 1;
+         return;
+     }
+     uint64_t *pre = ptr;
+     --pre;
+     if (*pre != redzone_pattern) {
+         raise(SIGABRT);
+         cache_error = -1;
+         return;
+     }
+     ptr = pre;
+ #endif
+     if (cache->limit != 0 && cache->limit < cache->total) {
+         free(ptr);
+         cache->total--;
+     } else {
+-        STAILQ_INSERT_TAIL(&cache->head, (struct cache_free_s *)ptr, c_next);
++        STAILQ_INSERT_HEAD(&cache->head, (struct cache_free_s *)ptr, c_next);
+         cache->freecurr++;
+     }
+ }
+ 
+
+commit e52734366c94475db33d3239f48b4542ec2d9c2f
+Date:   Wed Jul 28 00:15:45 2021 -0700
+
+    core: cache.c cleanups, use queue.h freelist
+    
+    cache constructors/destructors were never used, which just ended up
+    being wasted branches. Since there's no constructor/destructor for cache
+    objects, we can use the memory itself for the freelist.
+    
+    This removes a doubling realloc for the freelist of cache objects and
+    simplifies the code a bunch.
+
+diff --git a/cache.c b/cache.c
+--- a/cache.c
++++ b/cache.c
+@@ -127,45 +114,27 @@
+ void do_cache_free(cache_t *cache, void *ptr) {
+ #ifndef NDEBUG
+     /* validate redzone... */
+     if (memcmp(((char*)ptr) + cache->bufsize - (2 * sizeof(redzone_pattern)),
+                &redzone_pattern, sizeof(redzone_pattern)) != 0) {
+         raise(SIGABRT);
+         cache_error = 1;
+         return;
+     }
+     uint64_t *pre = ptr;
+     --pre;
+     if (*pre != redzone_pattern) {
+         raise(SIGABRT);
+         cache_error = -1;
+         return;
+     }
+     ptr = pre;
+ #endif
+     if (cache->limit != 0 && cache->limit < cache->total) {
+-        /* Allow freeing in case the limit was revised downward */
+-        if (cache->destructor) {
+-            cache->destructor(ptr, NULL);
+-        }
+         free(ptr);
+         cache->total--;
+-    } else if (cache->freecurr < cache->freetotal) {
+-        cache->ptr[cache->freecurr++] = ptr;
+     } else {
+-        /* try to enlarge free connections array */
+-        size_t newtotal = cache->freetotal * 2;
+-        void **new_free = realloc(cache->ptr, sizeof(char *) * newtotal);
+-        if (new_free) {
+-            cache->freetotal = newtotal;
+-            cache->ptr = new_free;
+-            cache->ptr[cache->freecurr++] = ptr;
+-        } else {
+-            if (cache->destructor) {
+-                cache->destructor(ptr, NULL);
+-            }
+-            free(ptr);
+-            cache->total--;
+-        }
++        STAILQ_INSERT_TAIL(&cache->head, (struct cache_free_s *)ptr, c_next);
++        cache->freecurr++;
+     }
+ }
+ 
+

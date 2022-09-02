@@ -1,0 +1,171 @@
+[NA] **new** commit 7833dc9148c549040eee27ddc90dda8cf28dcf4d
+Date:   Wed Feb 2 10:02:26 2022 +0000
+
+    core: Follow up to r1897240: Opt-out for AP_HAS_THREAD_LOCAL and/or pcre's usage.
+    
+    If the compiler's thread_local is not efficient enough on some platforms, or
+    not desired, have a way to disable its usage in httpd (at compile time).
+    
+    Handle -DAP_NO_THREAD_LOCAL and/or -DAPREG_NO_THREAD_LOCAL as build opt-out for
+    thread_local usage in httpd gobally and/or in ap_regex only (respectively).
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/httpd/httpd/trunk@1897689 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/server/util.c b/server/util.c
+--- a/server/util.c
++++ b/server/util.c
+@@ -3256,18 +3256,18 @@
+ AP_DECLARE(void *) ap_realloc(void *ptr, size_t size)
+ {
+     void *p = realloc(ptr, size);
+     if (p == NULL && size != 0)
+         ap_abort_on_oom();
+     return p;
+ }
+ 
+ #if APR_HAS_THREADS
+ 
+-#if APR_VERSION_AT_LEAST(1,8,0)
++#if APR_VERSION_AT_LEAST(1,8,0) && !defined(AP_NO_THREAD_LOCAL)
+ 
+ #define ap_thread_current_create apr_thread_current_create
+ 
+-#else  /* !APR_VERSION_AT_LEAST(1,8,0) */
++#else /* APR_VERSION_AT_LEAST(1,8,0) && !defined(AP_NO_THREAD_LOCAL) */
+ 
+ #if AP_HAS_THREAD_LOCAL
+ 
+
+[NA] **new** commit 3e0035d1892b7e8506cc2f53921282aaab8e4c23
+Date:   Thu Jan 27 12:34:53 2022 +0000
+
+    core: Follow up to r1897460: Provide ap_thread_main_create().
+    
+    Replace ap_thread_current_create() by ap_thread_main_create() which is how
+    it's used by httpd. The former is now a local helper only to implement the
+    latter.
+    
+    This allows to consolidate/factorize common code in the main() of httpd and
+    the unix MPMs.
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/httpd/httpd/trunk@1897543 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/server/util.c b/server/util.c
+--- a/server/util.c
++++ b/server/util.c
+@@ -3256,11 +3256,18 @@
+ AP_DECLARE(void *) ap_realloc(void *ptr, size_t size)
+ {
+     void *p = realloc(ptr, size);
+     if (p == NULL && size != 0)
+         ap_abort_on_oom();
+     return p;
+ }
+ 
+-#if APR_HAS_THREADS && !APR_VERSION_AT_LEAST(1,8,0)
++#if APR_HAS_THREADS
++
++#if APR_VERSION_AT_LEAST(1,8,0)
++
++#define ap_thread_current_create apr_thread_current_create
++
++#else  /* !APR_VERSION_AT_LEAST(1,8,0) */
+ 
+ #if AP_HAS_THREAD_LOCAL
++
+
+[N/A]**new** commit 15cf51108fe054a74c6b5846f81927725db16027
+Date:   Tue Jan 25 17:55:16 2022 +0000
+
+    Follow up to r1897460: !APR_HAS_THREAD implies no ap_thread_* either.
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/httpd/httpd/trunk@1897462 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/server/util.c b/server/util.c
+--- a/server/util.c
++++ b/server/util.c
+@@ -3256,11 +3256,11 @@
+ AP_DECLARE(void *) ap_realloc(void *ptr, size_t size)
+ {
+     void *p = realloc(ptr, size);
+     if (p == NULL && size != 0)
+         ap_abort_on_oom();
+     return p;
+ }
+ 
+-#if !APR_VERSION_AT_LEAST(1,8,0)
++#if APR_HAS_THREADS && !APR_VERSION_AT_LEAST(1,8,0)
+ 
+ #if AP_HAS_THREAD_LOCAL
+
+[N/A]**new** commit 604485905718803811a4b68cd2717a3712500d4a
+Date:   Tue Jan 25 17:34:57 2022 +0000
+
+    core: Efficient ap_thread_current() when apr_thread_local() is missing.
+    
+    #define ap_thread_create, ap_thread_current_create and ap_thread_current to
+    their apr-1.8+ equivalent if available, or implement them using the compiler's
+    thread_local mechanism if available, or finally provide stubs otherwise.
+    
+    #define AP_HAS_THREAD_LOCAL to 1 in the two former case or 0 otherwise, while
+    AP_THREAD_LOCAL is defined to the compiler's keyword iff AP_HAS_THREAD_LOCAL.
+    
+    Replace all apr_thread_create() calls with ap_thread_create() so that httpd
+    threads can use ap_thread_current()'s pool data as Thread Local Storage.
+    
+    Bump MMN minor.
+    
+    * include/httpd.h():
+      Define AP_HAS_THREAD_LOCAL, AP_THREAD_LOCAL (eventually), ap_thread_create(),
+      ap_thread_current_create() and ap_thread_current().
+    
+    * server/util.c:
+      Implement ap_thread_create(), ap_thread_current_create() and
+      ap_thread_current() when APR < 1.8.
+    
+    * modules/core/mod_watchdog.c, modules/http2/h2_workers.c,
+        modules/ssl/mod_ssl_ct.c:
+      Use ap_thread_create() instead of apr_thread_create.
+    
+    * server/main.c:
+      Use AP_HAS_THREAD_LOCAL and ap_thread_current_create instead of APR's.
+    
+    * server/util_pcre.c:
+      Use AP_HAS_THREAD_LOCAL and ap_thread_current instead of APR's.
+    
+    * server/mpm/event/event.c, server/mpm/worker/worker.c,
+        server/mpm/prefork/prefork.c:
+      Use ap_thread_create() instead of apr_thread_create.
+      Create an apr_thread_t/ap_thread_current() for the main chaild thread usable
+      at child_init().
+    
+    * server/mpm/winnt/child.c:
+      Use ap_thread_create() instead of CreateThread().
+      Create an apr_thread_t/ap_thread_current() for the main chaild thread usable
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/httpd/httpd/trunk@1897460 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/server/util.c b/server/util.c
+--- a/server/util.c
++++ b/server/util.c
+@@ -3256,8 +3256,11 @@
+ AP_DECLARE(void *) ap_realloc(void *ptr, size_t size)
+ {
+     void *p = realloc(ptr, size);
+     if (p == NULL && size != 0)
+         ap_abort_on_oom();
+     return p;
+ }
+ 
++#if !APR_VERSION_AT_LEAST(1,8,0)
++
++#if AP_HAS_THREAD_LOCAL
+

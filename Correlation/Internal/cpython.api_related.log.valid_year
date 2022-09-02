@@ -1,0 +1,2416 @@
+[FUNC] **new** commit 8319114feedd2a5b77378bba24eb9fb2689c5033
+Date:   Tue Dec 7 16:02:53 2021 +0000
+
+    bpo-45947: Place dict and values pointer at fixed (negative) offset just before GC header. (GH-29879)
+    
+    * Place __dict__ immediately before GC header for plain Python objects.
+    
+    * Fix up lazy dict creation logic to use managed dict pointers.
+    
+    * Manage values pointer, placing them directly before managed dict pointers.
+    
+    * Convert hint-based load/store attr specialization target managed dict classes.
+    
+    * Specialize LOAD_METHOD for managed dict objects.
+    
+    * Remove unsafe _PyObject_GC_Calloc function.
+    
+    * Remove unsafe _PyObject_GC_Malloc() function.
+    
+    * Add comment explaning use of Py_TPFLAGS_MANAGED_DICT.
+
+diff --git a/Modules/gcmodule.c b/Modules/gcmodule.c
+--- a/Modules/gcmodule.c
++++ b/Modules/gcmodule.c
+@@ -2273,12 +2258,18 @@
+-PyObject *
+-_PyObject_GC_Malloc(size_t basicsize)
+-{
+-    return _PyObject_GC_Alloc(0, basicsize);
+-}
+-
+-PyObject *
+-_PyObject_GC_Calloc(size_t basicsize)
++gc_alloc(size_t basicsize, size_t presize)
+ {
+-    return _PyObject_GC_Alloc(1, basicsize);
++    PyThreadState *tstate = _PyThreadState_GET();
++    if (basicsize > PY_SSIZE_T_MAX - presize) {
++        return _PyErr_NoMemory(tstate);
++    }
++    size_t size = presize + basicsize;
++    char *mem = PyObject_Malloc(size);
++    if (mem == NULL) {
++        return _PyErr_NoMemory(tstate);
++    }
++    ((PyObject **)mem)[0] = NULL;
++    ((PyObject **)mem)[1] = NULL;
++    PyObject *op = (PyObject *)(mem + presize);
++    _PyObject_GC_Link(op);
++    return op;
+ }
+ 
+
+commit 8319114feedd2a5b77378bba24eb9fb2689c5033
+Date:   Tue Dec 7 16:02:53 2021 +0000
+
+    bpo-45947: Place dict and values pointer at fixed (negative) offset just before GC header. (GH-29879)
+    
+    * Place __dict__ immediately before GC header for plain Python objects.
+    
+    * Fix up lazy dict creation logic to use managed dict pointers.
+    
+    * Manage values pointer, placing them directly before managed dict pointers.
+    
+    * Convert hint-based load/store attr specialization target managed dict classes.
+    
+    * Specialize LOAD_METHOD for managed dict objects.
+    
+    * Remove unsafe _PyObject_GC_Calloc function.
+    
+    * Remove unsafe _PyObject_GC_Malloc() function.
+    
+    * Add comment explaning use of Py_TPFLAGS_MANAGED_DICT.
+
+diff --git a/Modules/gcmodule.c b/Modules/gcmodule.c
+--- a/Modules/gcmodule.c
++++ b/Modules/gcmodule.c
+@@ -2286,10 +2277,11 @@
+ _PyObject_GC_New(PyTypeObject *tp)
+ {
+-    PyObject *op = _PyObject_GC_Malloc(_PyObject_SIZE(tp));
++    size_t presize = _PyType_PreHeaderSize(tp);
++    PyObject *op = gc_alloc(_PyObject_SIZE(tp), presize);
+     if (op == NULL) {
+         return NULL;
+     }
+     _PyObject_Init(op, tp);
+     return op;
+ }
+ 
+
+commit 8319114feedd2a5b77378bba24eb9fb2689c5033
+Date:   Tue Dec 7 16:02:53 2021 +0000
+
+    bpo-45947: Place dict and values pointer at fixed (negative) offset just before GC header. (GH-29879)
+    
+    * Place __dict__ immediately before GC header for plain Python objects.
+    
+    * Fix up lazy dict creation logic to use managed dict pointers.
+    
+    * Manage values pointer, placing them directly before managed dict pointers.
+    
+    * Convert hint-based load/store attr specialization target managed dict classes.
+    
+    * Specialize LOAD_METHOD for managed dict objects.
+    
+    * Remove unsafe _PyObject_GC_Calloc function.
+    
+    * Remove unsafe _PyObject_GC_Malloc() function.
+    
+    * Add comment explaning use of Py_TPFLAGS_MANAGED_DICT.
+
+diff --git a/Modules/gcmodule.c b/Modules/gcmodule.c
+--- a/Modules/gcmodule.c
++++ b/Modules/gcmodule.c
+@@ -2297,18 +2289,19 @@
+ _PyObject_GC_NewVar(PyTypeObject *tp, Py_ssize_t nitems)
+ {
+     size_t size;
+     PyVarObject *op;
+ 
+     if (nitems < 0) {
+         PyErr_BadInternalCall();
+         return NULL;
+     }
++    size_t presize = _PyType_PreHeaderSize(tp);
+     size = _PyObject_VAR_SIZE(tp, nitems);
+-    op = (PyVarObject *) _PyObject_GC_Malloc(size);
++    op = (PyVarObject *)gc_alloc(size, presize);
+     if (op == NULL) {
+         return NULL;
+     }
+     _PyObject_InitVar(op, tp, nitems);
+     return op;
+ }
+ 
+
+[INCR] **new** commit 713bb19356bce9b8f2b95461834fe1dae505f889
+Date:   Wed Oct 13 17:22:14 2021 +0200
+
+    bpo-45434: Mark the PyTokenizer C API as private (GH-28924)
+    
+    Rename PyTokenize functions to mark them as private:
+    
+    * PyTokenizer_FindEncodingFilename() => _PyTokenizer_FindEncodingFilename()
+    * PyTokenizer_FromString() => _PyTokenizer_FromString()
+    * PyTokenizer_FromFile() => _PyTokenizer_FromFile()
+    * PyTokenizer_FromUTF8() => _PyTokenizer_FromUTF8()
+    * PyTokenizer_Free() => _PyTokenizer_Free()
+    * PyTokenizer_Get() => _PyTokenizer_Get()
+    
+    Remove the unused PyTokenizer_FindEncoding() function.
+    
+    import.c: remove unused #include "errcode.h".
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -705,20 +705,20 @@
+-PyTokenizer_FromString(const char *str, int exec_input)
++_PyTokenizer_FromString(const char *str, int exec_input)
+ {
+     struct tok_state *tok = tok_new();
+     char *decoded;
+ 
+     if (tok == NULL)
+         return NULL;
+     decoded = decode_str(str, exec_input, tok);
+     if (decoded == NULL) {
+-        PyTokenizer_Free(tok);
++        _PyTokenizer_Free(tok);
+         return NULL;
+     }
+ 
+     tok->buf = tok->cur = tok->inp = decoded;
+     tok->end = decoded;
+     return tok;
+ }
+ 
+ /* Set up tokenizer for UTF-8 string */
+ 
+
+[FUNC] **new** commit 261a452a1300eeeae1428ffd6e6623329c085e2c
+Date:   Sun Mar 28 23:48:05 2021 +0100
+
+    bpo-25643: Refactor the C tokenizer into smaller, logical units (GH-25050)
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -762,18 +699,20 @@
+ PyTokenizer_FromString(const char *str, int exec_input)
+ {
+     struct tok_state *tok = tok_new();
+     char *decoded;
+ 
+     if (tok == NULL)
+         return NULL;
+     decoded = decode_str(str, exec_input, tok);
+     if (decoded == NULL) {
+         PyTokenizer_Free(tok);
+         return NULL;
+     }
+ 
+     tok->buf = tok->cur = tok->inp = decoded;
+     tok->end = decoded;
+     return tok;
+ }
+ 
++/* Set up tokenizer for UTF-8 string */
++
+
+commit 713bb19356bce9b8f2b95461834fe1dae505f889
+Date:   Wed Oct 13 17:22:14 2021 +0200
+
+    bpo-45434: Mark the PyTokenizer C API as private (GH-28924)
+    
+    Rename PyTokenize functions to mark them as private:
+    
+    * PyTokenizer_FindEncodingFilename() => _PyTokenizer_FindEncodingFilename()
+    * PyTokenizer_FromString() => _PyTokenizer_FromString()
+    * PyTokenizer_FromFile() => _PyTokenizer_FromFile()
+    * PyTokenizer_FromUTF8() => _PyTokenizer_FromUTF8()
+    * PyTokenizer_Free() => _PyTokenizer_Free()
+    * PyTokenizer_Get() => _PyTokenizer_Get()
+    
+    Remove the unused PyTokenizer_FindEncoding() function.
+    
+    import.c: remove unused #include "errcode.h".
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -726,27 +726,27 @@
+-PyTokenizer_FromUTF8(const char *str, int exec_input)
++_PyTokenizer_FromUTF8(const char *str, int exec_input)
+ {
+     struct tok_state *tok = tok_new();
+     char *translated;
+     if (tok == NULL)
+         return NULL;
+     tok->input = translated = translate_newlines(str, exec_input, tok);
+     if (translated == NULL) {
+-        PyTokenizer_Free(tok);
++        _PyTokenizer_Free(tok);
+         return NULL;
+     }
+     tok->decoding_state = STATE_NORMAL;
+     tok->enc = NULL;
+     tok->str = translated;
+     tok->encoding = new_string("utf-8", 5, tok);
+     if (!tok->encoding) {
+-        PyTokenizer_Free(tok);
++        _PyTokenizer_Free(tok);
+         return NULL;
+     }
+ 
+     tok->buf = tok->cur = tok->inp = translated;
+     tok->end = translated;
+     return tok;
+ }
+ 
+ /* Set up tokenizer for file */
+ 
+
+commit 261a452a1300eeeae1428ffd6e6623329c085e2c
+Date:   Sun Mar 28 23:48:05 2021 +0100
+
+    bpo-25643: Refactor the C tokenizer into smaller, logical units (GH-25050)
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -781,29 +720,27 @@
+ PyTokenizer_FromUTF8(const char *str, int exec_input)
+ {
+     struct tok_state *tok = tok_new();
+     char *translated;
+     if (tok == NULL)
+         return NULL;
+     tok->input = translated = translate_newlines(str, exec_input, tok);
+     if (translated == NULL) {
+         PyTokenizer_Free(tok);
+         return NULL;
+     }
+-    tok->decoding_state = STATE_RAW;
+-    tok->read_coding_spec = 1;
++    tok->decoding_state = STATE_NORMAL;
+     tok->enc = NULL;
+     tok->str = translated;
+-    tok->encoding = (char *)PyMem_Malloc(6);
++    tok->encoding = new_string("utf-8", 5, tok);
+     if (!tok->encoding) {
+         PyTokenizer_Free(tok);
+         return NULL;
+     }
+-    strcpy(tok->encoding, "utf-8");
+ 
+     tok->buf = tok->cur = tok->inp = translated;
+     tok->end = translated;
+     return tok;
+ }
+ 
+ /* Set up tokenizer for file */
+ 
+
+commit 713bb19356bce9b8f2b95461834fe1dae505f889
+Date:   Wed Oct 13 17:22:14 2021 +0200
+
+    bpo-45434: Mark the PyTokenizer C API as private (GH-28924)
+    
+    Rename PyTokenize functions to mark them as private:
+    
+    * PyTokenizer_FindEncodingFilename() => _PyTokenizer_FindEncodingFilename()
+    * PyTokenizer_FromString() => _PyTokenizer_FromString()
+    * PyTokenizer_FromFile() => _PyTokenizer_FromFile()
+    * PyTokenizer_FromUTF8() => _PyTokenizer_FromUTF8()
+    * PyTokenizer_Free() => _PyTokenizer_Free()
+    * PyTokenizer_Get() => _PyTokenizer_Get()
+    
+    Remove the unused PyTokenizer_FindEncoding() function.
+    
+    import.c: remove unused #include "errcode.h".
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -754,30 +754,30 @@
+-PyTokenizer_FromFile(FILE *fp, const char* enc,
+-                     const char *ps1, const char *ps2)
++_PyTokenizer_FromFile(FILE *fp, const char* enc,
++                      const char *ps1, const char *ps2)
+ {
+     struct tok_state *tok = tok_new();
+     if (tok == NULL)
+         return NULL;
+     if ((tok->buf = (char *)PyMem_Malloc(BUFSIZ)) == NULL) {
+-        PyTokenizer_Free(tok);
++        _PyTokenizer_Free(tok);
+         return NULL;
+     }
+     tok->cur = tok->inp = tok->buf;
+     tok->end = tok->buf + BUFSIZ;
+     tok->fp = fp;
+     tok->prompt = ps1;
+     tok->nextprompt = ps2;
+     if (enc != NULL) {
+         /* Must copy encoding declaration since it
+            gets copied into the parse tree. */
+         tok->encoding = new_string(enc, strlen(enc), tok);
+         if (!tok->encoding) {
+-            PyTokenizer_Free(tok);
++            _PyTokenizer_Free(tok);
+             return NULL;
+         }
+         tok->decoding_state = STATE_NORMAL;
+     }
+     return tok;
+ }
+ 
+ /* Free a tok_state structure */
+ 
+
+commit 261a452a1300eeeae1428ffd6e6623329c085e2c
+Date:   Sun Mar 28 23:48:05 2021 +0100
+
+    bpo-25643: Refactor the C tokenizer into smaller, logical units (GH-25050)
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -811,32 +748,30 @@
+ PyTokenizer_FromFile(FILE *fp, const char* enc,
+                      const char *ps1, const char *ps2)
+ {
+     struct tok_state *tok = tok_new();
+     if (tok == NULL)
+         return NULL;
+     if ((tok->buf = (char *)PyMem_Malloc(BUFSIZ)) == NULL) {
+         PyTokenizer_Free(tok);
+         return NULL;
+     }
+     tok->cur = tok->inp = tok->buf;
+     tok->end = tok->buf + BUFSIZ;
+     tok->fp = fp;
+     tok->prompt = ps1;
+     tok->nextprompt = ps2;
+     if (enc != NULL) {
+         /* Must copy encoding declaration since it
+            gets copied into the parse tree. */
+-        tok->encoding = PyMem_Malloc(strlen(enc)+1);
++        tok->encoding = new_string(enc, strlen(enc), tok);
+         if (!tok->encoding) {
+             PyTokenizer_Free(tok);
+             return NULL;
+         }
+-        strcpy(tok->encoding, enc);
+         tok->decoding_state = STATE_NORMAL;
+     }
+     return tok;
+ }
+ 
+-
+ /* Free a tok_state structure */
+ 
+
+[FUNC] **new** commit 9942f42a93ccda047fd3558c47b822e99afe10c0
+Date:   Thu Oct 21 16:12:20 2021 +0300
+
+    bpo-45522: Allow to disable freelists on build time (GH-29056)
+    
+    
+    
+    Freelists for object structs can now be disabled. A new ``configure``
+    option ``--without-freelists`` can be used to disable all freelists
+    except empty tuple singleton. Internal Py*_MAXFREELIST macros can now
+    be defined as 0 without causing compiler warnings and segfaults.
+    
+    Signed-off-by: Christian Heimes <christian@python.org>
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -637,33 +647,36 @@
+ new_dict(PyDictKeysObject *keys, PyDictValues *values, Py_ssize_t used, int free_values_on_failure)
+ {
+     PyDictObject *mp;
+     assert(keys != NULL);
++#if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_dict() must not be called after _PyDict_Fini()
+     assert(state->numfree != -1);
+ #endif
+     if (state->numfree) {
+         mp = state->free_list[--state->numfree];
+         assert (mp != NULL);
+         assert (Py_IS_TYPE(mp, &PyDict_Type));
+         _Py_NewReference((PyObject *)mp);
+     }
+-    else {
++    else
++#endif
++    {
+         mp = PyObject_GC_New(PyDictObject, &PyDict_Type);
+         if (mp == NULL) {
+             dictkeys_decref(keys);
+             if (free_values_on_failure) {
+                 free_values(values);
+             }
+             return NULL;
+         }
+     }
+     mp->ma_keys = keys;
+     mp->ma_values = values;
+     mp->ma_used = used;
+     mp->ma_version_tag = DICT_NEXT_VERSION();
+     ASSERT_CONSISTENT(mp);
+     return (PyObject *)mp;
+ }
+ 
+
+[PERF] **new** commit a8b9350964f43cb648c98c179c8037fbf3ff8a7d
+Date:   Wed Oct 13 14:19:34 2021 +0100
+
+    bpo-45340: Don't create object dictionaries unless actually needed (GH-28802)
+    
+    * Never change types' cached keys. It could invalidate inline attribute objects.
+    
+    * Lazily create object dictionaries.
+    
+    * Update specialization of LOAD/STORE_ATTR.
+    
+    * Don't update shared keys version for deletion of value.
+    
+    * Update gdb support to handle instance values.
+    
+    * Rename SPLIT_KEYS opcodes to INSTANCE_VALUE.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -637,33 +637,33 @@
+-new_dict(PyDictKeysObject *keys, PyDictValues *values)
++new_dict(PyDictKeysObject *keys, PyDictValues *values, Py_ssize_t used, int free_values_on_failure)
+ {
+     PyDictObject *mp;
+     assert(keys != NULL);
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_dict() must not be called after _PyDict_Fini()
+     assert(state->numfree != -1);
+ #endif
+     if (state->numfree) {
+         mp = state->free_list[--state->numfree];
+         assert (mp != NULL);
+         assert (Py_IS_TYPE(mp, &PyDict_Type));
+         _Py_NewReference((PyObject *)mp);
+     }
+     else {
+         mp = PyObject_GC_New(PyDictObject, &PyDict_Type);
+         if (mp == NULL) {
+             dictkeys_decref(keys);
+-            if (values != empty_values) {
++            if (free_values_on_failure) {
+                 free_values(values);
+             }
+             return NULL;
+         }
+     }
+     mp->ma_keys = keys;
+     mp->ma_values = values;
+-    mp->ma_used = 0;
++    mp->ma_used = used;
+     mp->ma_version_tag = DICT_NEXT_VERSION();
+     ASSERT_CONSISTENT(mp);
+     return (PyObject *)mp;
+ }
+ 
+
+[FUNC] **new** commit a7252f88d3fa33036bdd6036b8c97bc785ed6f17
+Date:   Wed Oct 6 13:19:53 2021 +0100
+
+    bpo-40116: Add insertion order bit-vector to dict values to allow dicts to share keys more freely. (GH-28520)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -614,33 +636,33 @@
+-new_dict(PyDictKeysObject *keys, PyObject **values)
++new_dict(PyDictKeysObject *keys, PyDictValues *values)
+ {
+     PyDictObject *mp;
+     assert(keys != NULL);
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_dict() must not be called after _PyDict_Fini()
+     assert(state->numfree != -1);
+ #endif
+     if (state->numfree) {
+         mp = state->free_list[--state->numfree];
+         assert (mp != NULL);
+         assert (Py_IS_TYPE(mp, &PyDict_Type));
+         _Py_NewReference((PyObject *)mp);
+     }
+     else {
+         mp = PyObject_GC_New(PyDictObject, &PyDict_Type);
+         if (mp == NULL) {
+             dictkeys_decref(keys);
+             if (values != empty_values) {
+                 free_values(values);
+             }
+             return NULL;
+         }
+     }
+     mp->ma_keys = keys;
+     mp->ma_values = values;
+     mp->ma_used = 0;
+     mp->ma_version_tag = DICT_NEXT_VERSION();
+     ASSERT_CONSISTENT(mp);
+     return (PyObject *)mp;
+ }
+ 
+
+[FUNC] **new** commit 25db2b361beb865192a3424830ddcb0ae4b17318
+Date:   Tue Feb 8 11:50:38 2022 +0000
+
+    bpo-46675: Allow object value arrays and split key dictionaries larger than 16 (GH-31191)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -691,19 +711,19 @@
+ new_dict_with_shared_keys(PyDictKeysObject *keys)
+ {
+     PyDictValues *values;
+     Py_ssize_t i, size;
+ 
+     size = shared_keys_usable_size(keys);
+     values = new_values(size);
+     if (values == NULL) {
+         dictkeys_decref(keys);
+         return PyErr_NoMemory();
+     }
+-    values->mv_order = 0;
++    ((char *)values)[-2] = 0;
+     for (i = 0; i < size; i++) {
+         values->values[i] = NULL;
+     }
+     return new_dict(keys, values, 0, 1);
+ }
+ 
+ 
+
+commit a8b9350964f43cb648c98c179c8037fbf3ff8a7d
+Date:   Wed Oct 13 14:19:34 2021 +0100
+
+    bpo-45340: Don't create object dictionaries unless actually needed (GH-28802)
+    
+    * Never change types' cached keys. It could invalidate inline attribute objects.
+    
+    * Lazily create object dictionaries.
+    
+    * Update specialization of LOAD/STORE_ATTR.
+    
+    * Don't update shared keys version for deletion of value.
+    
+    * Update gdb support to handle instance values.
+    
+    * Rename SPLIT_KEYS opcodes to INSTANCE_VALUE.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -672,19 +678,19 @@
+ new_dict_with_shared_keys(PyDictKeysObject *keys)
+ {
+     PyDictValues *values;
+     Py_ssize_t i, size;
+ 
+-    size = USABLE_FRACTION(DK_SIZE(keys));
++    size = shared_keys_usable_size(keys);
+     values = new_values(size);
+     if (values == NULL) {
+         dictkeys_decref(keys);
+         return PyErr_NoMemory();
+     }
+     values->mv_order = 0;
+     for (i = 0; i < size; i++) {
+         values->values[i] = NULL;
+     }
+-    return new_dict(keys, values);
++    return new_dict(keys, values, 0, 1);
+ }
+ 
+ 
+
+commit a7252f88d3fa33036bdd6036b8c97bc785ed6f17
+Date:   Wed Oct 6 13:19:53 2021 +0100
+
+    bpo-40116: Add insertion order bit-vector to dict values to allow dicts to share keys more freely. (GH-28520)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -649,18 +671,19 @@
+ new_dict_with_shared_keys(PyDictKeysObject *keys)
+ {
+-    PyObject **values;
++    PyDictValues *values;
+     Py_ssize_t i, size;
+ 
+     size = USABLE_FRACTION(DK_SIZE(keys));
+     values = new_values(size);
+     if (values == NULL) {
+         dictkeys_decref(keys);
+         return PyErr_NoMemory();
+     }
++    values->mv_order = 0;
+     for (i = 0; i < size; i++) {
+-        values[i] = NULL;
++        values->values[i] = NULL;
+     }
+     return new_dict(keys, values);
+ }
+ 
+ 
+
+[FUNC] **new** commit 03642df1a1cfddcd740b62e78bddfa3ea6863da4
+Date:   Wed Mar 2 19:05:12 2022 +0900
+
+    dict: Internal cleanup (GH-31641)
+    
+    * Make empty_key from split table to combined table.
+    * Use unicode_get_hash() when possible.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -845,7 +835,7 @@
+ PyDict_New(void)
+ {
+     dictkeys_incref(Py_EMPTY_KEYS);
+-    return new_dict(Py_EMPTY_KEYS, empty_values, 0, 0);
++    return new_dict(Py_EMPTY_KEYS, NULL, 0, 0);
+ }
+ 
+ /* Search index of hash table from offset of entry table */
+
+commit a8b9350964f43cb648c98c179c8037fbf3ff8a7d
+Date:   Wed Oct 13 14:19:34 2021 +0100
+
+    bpo-45340: Don't create object dictionaries unless actually needed (GH-28802)
+    
+    * Never change types' cached keys. It could invalidate inline attribute objects.
+    
+    * Lazily create object dictionaries.
+    
+    * Update specialization of LOAD/STORE_ATTR.
+    
+    * Don't update shared keys version for deletion of value.
+    
+    * Update gdb support to handle instance values.
+    
+    * Rename SPLIT_KEYS opcodes to INSTANCE_VALUE.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -733,7 +739,7 @@
+ PyDict_New(void)
+ {
+     dictkeys_incref(Py_EMPTY_KEYS);
+-    return new_dict(Py_EMPTY_KEYS, empty_values);
++    return new_dict(Py_EMPTY_KEYS, empty_values, 0, 0);
+ }
+ 
+ /* Search index of hash table from offset of entry table */
+
+[FUNC] **new** commit 9833bb91e4d5c2606421d9ec2085f5c2dfb6f72c
+Date:   Wed Mar 2 08:09:28 2022 +0900
+
+    bpo-46845: Reduce dict size when all keys are Unicode (GH-31564)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -1350,0 +1595,5 @@
++_PyDict_NewPresized(Py_ssize_t minused)
++{
++    return dict_new_presized(minused, false);
++}
++
+commit 25db2b361beb865192a3424830ddcb0ae4b17318
+Date:   Tue Feb 8 11:50:38 2022 +0000
+
+    bpo-46675: Allow object value arrays and split key dictionaries larger than 16 (GH-31191)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -2703,93 +2721,94 @@
+ PyDict_Copy(PyObject *o)
+ {
+     PyObject *copy;
+     PyDictObject *mp;
+     Py_ssize_t i, n;
+ 
+     if (o == NULL || !PyDict_Check(o)) {
+         PyErr_BadInternalCall();
+         return NULL;
+     }
+ 
+     mp = (PyDictObject *)o;
+     if (mp->ma_used == 0) {
+         /* The dict is empty; just return a new dict. */
+         return PyDict_New();
+     }
+ 
+     if (_PyDict_HasSplitTable(mp)) {
+         PyDictObject *split_copy;
+         Py_ssize_t size = shared_keys_usable_size(mp->ma_keys);
+         PyDictValues *newvalues;
+         newvalues = new_values(size);
+         if (newvalues == NULL)
+             return PyErr_NoMemory();
+         split_copy = PyObject_GC_New(PyDictObject, &PyDict_Type);
+         if (split_copy == NULL) {
+             free_values(newvalues);
+             return NULL;
+         }
+-        newvalues->mv_order = mp->ma_values->mv_order;
++        size_t prefix_size = ((uint8_t *)newvalues)[-1];
++        memcpy(((char *)newvalues)-prefix_size, ((char *)mp->ma_values)-prefix_size, prefix_size-1);
+         split_copy->ma_values = newvalues;
+         split_copy->ma_keys = mp->ma_keys;
+         split_copy->ma_used = mp->ma_used;
+         split_copy->ma_version_tag = DICT_NEXT_VERSION();
+         dictkeys_incref(mp->ma_keys);
+         for (i = 0, n = size; i < n; i++) {
+             PyObject *value = mp->ma_values->values[i];
+             Py_XINCREF(value);
+             split_copy->ma_values->values[i] = value;
+         }
+         if (_PyObject_GC_IS_TRACKED(mp))
+             _PyObject_GC_TRACK(split_copy);
+         return (PyObject *)split_copy;
+     }
+ 
+     if (Py_TYPE(mp)->tp_iter == (getiterfunc)dict_iter &&
+             mp->ma_values == NULL &&
+             (mp->ma_used >= (mp->ma_keys->dk_nentries * 2) / 3))
+     {
+         /* Use fast-copy if:
+ 
+            (1) type(mp) doesn't override tp_iter; and
+ 
+            (2) 'mp' is not a split-dict; and
+ 
+            (3) if 'mp' is non-compact ('del' operation does not resize dicts),
+                do fast-copy only if it has at most 1/3 non-used keys.
+ 
+            The last condition (3) is important to guard against a pathological
+            case when a large dict is almost emptied with multiple del/pop
+            operations and copied after that.  In cases like this, we defer to
+            PyDict_Merge, which produces a compacted copy.
+         */
+         PyDictKeysObject *keys = clone_combined_dict_keys(mp);
+         if (keys == NULL) {
+             return NULL;
+         }
+         PyDictObject *new = (PyDictObject *)new_dict(keys, NULL, 0, 0);
+         if (new == NULL) {
+             /* In case of an error, `new_dict()` takes care of
+                cleaning up `keys`. */
+             return NULL;
+         }
+ 
+         new->ma_used = mp->ma_used;
+         ASSERT_CONSISTENT(new);
+         if (_PyObject_GC_IS_TRACKED(mp)) {
+             /* Maintain tracking. */
+             _PyObject_GC_TRACK(new);
+         }
+ 
+         return (PyObject *)new;
+     }
+ 
+     copy = PyDict_New();
+     if (copy == NULL)
+         return NULL;
+     if (dict_merge(copy, o, 1) == 0)
+         return copy;
+     Py_DECREF(copy);
+     return NULL;
+ }
+ 
+
+commit a8b9350964f43cb648c98c179c8037fbf3ff8a7d
+Date:   Wed Oct 13 14:19:34 2021 +0100
+
+    bpo-45340: Don't create object dictionaries unless actually needed (GH-28802)
+    
+    * Never change types' cached keys. It could invalidate inline attribute objects.
+    
+    * Lazily create object dictionaries.
+    
+    * Update specialization of LOAD/STORE_ATTR.
+    
+    * Don't update shared keys version for deletion of value.
+    
+    * Update gdb support to handle instance values.
+    
+    * Rename SPLIT_KEYS opcodes to INSTANCE_VALUE.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -2676,93 +2661,93 @@
+ PyDict_Copy(PyObject *o)
+ {
+     PyObject *copy;
+     PyDictObject *mp;
+     Py_ssize_t i, n;
+ 
+     if (o == NULL || !PyDict_Check(o)) {
+         PyErr_BadInternalCall();
+         return NULL;
+     }
+ 
+     mp = (PyDictObject *)o;
+     if (mp->ma_used == 0) {
+         /* The dict is empty; just return a new dict. */
+         return PyDict_New();
+     }
+ 
+     if (_PyDict_HasSplitTable(mp)) {
+         PyDictObject *split_copy;
+-        Py_ssize_t size = USABLE_FRACTION(DK_SIZE(mp->ma_keys));
++        Py_ssize_t size = shared_keys_usable_size(mp->ma_keys);
+         PyDictValues *newvalues;
+         newvalues = new_values(size);
+         if (newvalues == NULL)
+             return PyErr_NoMemory();
+         split_copy = PyObject_GC_New(PyDictObject, &PyDict_Type);
+         if (split_copy == NULL) {
+             free_values(newvalues);
+             return NULL;
+         }
+         newvalues->mv_order = mp->ma_values->mv_order;
+         split_copy->ma_values = newvalues;
+         split_copy->ma_keys = mp->ma_keys;
+         split_copy->ma_used = mp->ma_used;
+         split_copy->ma_version_tag = DICT_NEXT_VERSION();
+         dictkeys_incref(mp->ma_keys);
+         for (i = 0, n = size; i < n; i++) {
+             PyObject *value = mp->ma_values->values[i];
+             Py_XINCREF(value);
+             split_copy->ma_values->values[i] = value;
+         }
+         if (_PyObject_GC_IS_TRACKED(mp))
+             _PyObject_GC_TRACK(split_copy);
+         return (PyObject *)split_copy;
+     }
+ 
+     if (Py_TYPE(mp)->tp_iter == (getiterfunc)dict_iter &&
+             mp->ma_values == NULL &&
+             (mp->ma_used >= (mp->ma_keys->dk_nentries * 2) / 3))
+     {
+         /* Use fast-copy if:
+ 
+            (1) type(mp) doesn't override tp_iter; and
+ 
+            (2) 'mp' is not a split-dict; and
+ 
+            (3) if 'mp' is non-compact ('del' operation does not resize dicts),
+                do fast-copy only if it has at most 1/3 non-used keys.
+ 
+            The last condition (3) is important to guard against a pathological
+            case when a large dict is almost emptied with multiple del/pop
+            operations and copied after that.  In cases like this, we defer to
+            PyDict_Merge, which produces a compacted copy.
+         */
+         PyDictKeysObject *keys = clone_combined_dict_keys(mp);
+         if (keys == NULL) {
+             return NULL;
+         }
+-        PyDictObject *new = (PyDictObject *)new_dict(keys, NULL);
++        PyDictObject *new = (PyDictObject *)new_dict(keys, NULL, 0, 0);
+         if (new == NULL) {
+             /* In case of an error, `new_dict()` takes care of
+                cleaning up `keys`. */
+             return NULL;
+         }
+ 
+         new->ma_used = mp->ma_used;
+         ASSERT_CONSISTENT(new);
+         if (_PyObject_GC_IS_TRACKED(mp)) {
+             /* Maintain tracking. */
+             _PyObject_GC_TRACK(new);
+         }
+ 
+         return (PyObject *)new;
+     }
+ 
+     copy = PyDict_New();
+     if (copy == NULL)
+         return NULL;
+     if (dict_merge(copy, o, 1) == 0)
+         return copy;
+     Py_DECREF(copy);
+     return NULL;
+ }
+ 
+
+commit a7252f88d3fa33036bdd6036b8c97bc785ed6f17
+Date:   Wed Oct 6 13:19:53 2021 +0100
+
+    bpo-40116: Add insertion order bit-vector to dict values to allow dicts to share keys more freely. (GH-28520)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -2660,92 +2675,93 @@
+ PyDict_Copy(PyObject *o)
+ {
+     PyObject *copy;
+     PyDictObject *mp;
+     Py_ssize_t i, n;
+ 
+     if (o == NULL || !PyDict_Check(o)) {
+         PyErr_BadInternalCall();
+         return NULL;
+     }
+ 
+     mp = (PyDictObject *)o;
+     if (mp->ma_used == 0) {
+         /* The dict is empty; just return a new dict. */
+         return PyDict_New();
+     }
+ 
+     if (_PyDict_HasSplitTable(mp)) {
+         PyDictObject *split_copy;
+         Py_ssize_t size = USABLE_FRACTION(DK_SIZE(mp->ma_keys));
+-        PyObject **newvalues;
++        PyDictValues *newvalues;
+         newvalues = new_values(size);
+         if (newvalues == NULL)
+             return PyErr_NoMemory();
+         split_copy = PyObject_GC_New(PyDictObject, &PyDict_Type);
+         if (split_copy == NULL) {
+             free_values(newvalues);
+             return NULL;
+         }
++        newvalues->mv_order = mp->ma_values->mv_order;
+         split_copy->ma_values = newvalues;
+         split_copy->ma_keys = mp->ma_keys;
+         split_copy->ma_used = mp->ma_used;
+         split_copy->ma_version_tag = DICT_NEXT_VERSION();
+         dictkeys_incref(mp->ma_keys);
+         for (i = 0, n = size; i < n; i++) {
+-            PyObject *value = mp->ma_values[i];
++            PyObject *value = mp->ma_values->values[i];
+             Py_XINCREF(value);
+-            split_copy->ma_values[i] = value;
++            split_copy->ma_values->values[i] = value;
+         }
+         if (_PyObject_GC_IS_TRACKED(mp))
+             _PyObject_GC_TRACK(split_copy);
+         return (PyObject *)split_copy;
+     }
+ 
+     if (Py_TYPE(mp)->tp_iter == (getiterfunc)dict_iter &&
+             mp->ma_values == NULL &&
+             (mp->ma_used >= (mp->ma_keys->dk_nentries * 2) / 3))
+     {
+         /* Use fast-copy if:
+ 
+            (1) type(mp) doesn't override tp_iter; and
+ 
+            (2) 'mp' is not a split-dict; and
+ 
+            (3) if 'mp' is non-compact ('del' operation does not resize dicts),
+                do fast-copy only if it has at most 1/3 non-used keys.
+ 
+            The last condition (3) is important to guard against a pathological
+            case when a large dict is almost emptied with multiple del/pop
+            operations and copied after that.  In cases like this, we defer to
+            PyDict_Merge, which produces a compacted copy.
+         */
+         PyDictKeysObject *keys = clone_combined_dict_keys(mp);
+         if (keys == NULL) {
+             return NULL;
+         }
+         PyDictObject *new = (PyDictObject *)new_dict(keys, NULL);
+         if (new == NULL) {
+             /* In case of an error, `new_dict()` takes care of
+                cleaning up `keys`. */
+             return NULL;
+         }
+ 
+         new->ma_used = mp->ma_used;
+         ASSERT_CONSISTENT(new);
+         if (_PyObject_GC_IS_TRACKED(mp)) {
+             /* Maintain tracking. */
+             _PyObject_GC_TRACK(new);
+         }
+ 
+         return (PyObject *)new;
+     }
+ 
+     copy = PyDict_New();
+     if (copy == NULL)
+         return NULL;
+     if (dict_merge(copy, o, 1) == 0)
+         return copy;
+     Py_DECREF(copy);
+     return NULL;
+ }
+ 
+
+commit 9833bb91e4d5c2606421d9ec2085f5c2dfb6f72c
+Date:   Wed Mar 2 08:09:28 2022 +0900
+
+    bpo-46845: Reduce dict size when all keys are Unicode (GH-31564)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -564,59 +605,60 @@
+-new_keys_object(uint8_t log2_size)
++new_keys_object(uint8_t log2_size, bool unicode)
+ {
+     PyDictKeysObject *dk;
+     Py_ssize_t usable;
+     int log2_bytes;
++    size_t entry_size = unicode ? sizeof(PyDictUnicodeEntry) : sizeof(PyDictKeyEntry);
+ 
+     assert(log2_size >= PyDict_LOG_MINSIZE);
+ 
+     usable = USABLE_FRACTION(1<<log2_size);
+     if (log2_size < 8) {
+         log2_bytes = log2_size;
+     }
+     else if (log2_size < 16) {
+         log2_bytes = log2_size + 1;
+     }
+ #if SIZEOF_VOID_P > 4
+     else if (log2_size >= 32) {
+         log2_bytes = log2_size + 3;
+     }
+ #endif
+     else {
+         log2_bytes = log2_size + 2;
+     }
+ 
+ #if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_keys_object() must not be called after _PyDict_Fini()
+     assert(state->keys_numfree != -1);
+ #endif
+-    if (log2_size == PyDict_LOG_MINSIZE && state->keys_numfree > 0) {
++    if (log2_size == PyDict_LOG_MINSIZE && unicode && state->keys_numfree > 0) {
+         dk = state->keys_free_list[--state->keys_numfree];
+     }
+     else
+ #endif
+     {
+         dk = PyObject_Malloc(sizeof(PyDictKeysObject)
+                              + ((size_t)1 << log2_bytes)
+-                             + sizeof(PyDictKeyEntry) * usable);
++                             + entry_size * usable);
+         if (dk == NULL) {
+             PyErr_NoMemory();
+             return NULL;
+         }
+     }
+ #ifdef Py_REF_DEBUG
+     _Py_RefTotal++;
+ #endif
+     dk->dk_refcnt = 1;
+     dk->dk_log2_size = log2_size;
+     dk->dk_log2_index_bytes = log2_bytes;
+-    dk->dk_kind = DICT_KEYS_UNICODE;
++    dk->dk_kind = unicode ? DICT_KEYS_UNICODE : DICT_KEYS_GENERAL;
+     dk->dk_nentries = 0;
+     dk->dk_usable = usable;
+     dk->dk_version = 0;
+     memset(&dk->dk_indices[0], 0xff, ((size_t)1 << log2_bytes));
+-    memset(DK_ENTRIES(dk), 0, sizeof(PyDictKeyEntry) * usable);
++    memset(&dk->dk_indices[(size_t)1 << log2_bytes], 0, entry_size * usable);
+     return dk;
+ }
+ 
+
+[FUNC] **new** commit 1e344684d8d42206858c4eca8ec7950e644f4220
+Date:   Tue Feb 22 20:03:15 2022 +0900
+
+    dict: Add dk_log2_index_bytes (GH-31439)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -562,57 +564,59 @@
+ new_keys_object(uint8_t log2_size)
+ {
+     PyDictKeysObject *dk;
+-    Py_ssize_t es, usable;
++    Py_ssize_t usable;
++    int log2_bytes;
+ 
+     assert(log2_size >= PyDict_LOG_MINSIZE);
+ 
+     usable = USABLE_FRACTION(1<<log2_size);
+-    if (log2_size <= 7) {
+-        es = 1;
++    if (log2_size < 8) {
++        log2_bytes = log2_size;
+     }
+-    else if (log2_size <= 15) {
+-        es = 2;
++    else if (log2_size < 16) {
++        log2_bytes = log2_size + 1;
+     }
+ #if SIZEOF_VOID_P > 4
+-    else if (log2_size <= 31) {
+-        es = 4;
++    else if (log2_size >= 32) {
++        log2_bytes = log2_size + 3;
+     }
+ #endif
+     else {
+-        es = sizeof(Py_ssize_t);
++        log2_bytes = log2_size + 2;
+     }
+ 
+ #if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_keys_object() must not be called after _PyDict_Fini()
+     assert(state->keys_numfree != -1);
+ #endif
+     if (log2_size == PyDict_LOG_MINSIZE && state->keys_numfree > 0) {
+         dk = state->keys_free_list[--state->keys_numfree];
+     }
+     else
+ #endif
+     {
+         dk = PyObject_Malloc(sizeof(PyDictKeysObject)
+-                             + (es<<log2_size)
++                             + ((size_t)1 << log2_bytes)
+                              + sizeof(PyDictKeyEntry) * usable);
+         if (dk == NULL) {
+             PyErr_NoMemory();
+             return NULL;
+         }
+     }
+ #ifdef Py_REF_DEBUG
+     _Py_RefTotal++;
+ #endif
+     dk->dk_refcnt = 1;
+     dk->dk_log2_size = log2_size;
++    dk->dk_log2_index_bytes = log2_bytes;
+     dk->dk_kind = DICT_KEYS_UNICODE;
+     dk->dk_nentries = 0;
+     dk->dk_usable = usable;
+     dk->dk_version = 0;
+-    memset(&dk->dk_indices[0], 0xff, es<<log2_size);
++    memset(&dk->dk_indices[0], 0xff, ((size_t)1 << log2_bytes));
+     memset(DK_ENTRIES(dk), 0, sizeof(PyDictKeyEntry) * usable);
+     return dk;
+ }
+ 
+
+commit 9942f42a93ccda047fd3558c47b822e99afe10c0
+Date:   Thu Oct 21 16:12:20 2021 +0300
+
+    bpo-45522: Allow to disable freelists on build time (GH-29056)
+    
+    
+    
+    Freelists for object structs can now be disabled. A new ``configure``
+    option ``--without-freelists`` can be used to disable all freelists
+    except empty tuple singleton. Internal Py*_MAXFREELIST macros can now
+    be defined as 0 without causing compiler warnings and segfaults.
+    
+    Signed-off-by: Christian Heimes <christian@python.org>
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -550,55 +556,57 @@
+ new_keys_object(uint8_t log2_size)
+ {
+     PyDictKeysObject *dk;
+     Py_ssize_t es, usable;
+ 
+     assert(log2_size >= PyDict_LOG_MINSIZE);
+ 
+     usable = USABLE_FRACTION(1<<log2_size);
+     if (log2_size <= 7) {
+         es = 1;
+     }
+     else if (log2_size <= 15) {
+         es = 2;
+     }
+ #if SIZEOF_VOID_P > 4
+     else if (log2_size <= 31) {
+         es = 4;
+     }
+ #endif
+     else {
+         es = sizeof(Py_ssize_t);
+     }
+ 
++#if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_keys_object() must not be called after _PyDict_Fini()
+     assert(state->keys_numfree != -1);
+ #endif
+     if (log2_size == PyDict_LOG_MINSIZE && state->keys_numfree > 0) {
+         dk = state->keys_free_list[--state->keys_numfree];
+     }
+     else
++#endif
+     {
+         dk = PyObject_Malloc(sizeof(PyDictKeysObject)
+                              + (es<<log2_size)
+                              + sizeof(PyDictKeyEntry) * usable);
+         if (dk == NULL) {
+             PyErr_NoMemory();
+             return NULL;
+         }
+     }
+ #ifdef Py_REF_DEBUG
+     _Py_RefTotal++;
+ #endif
+     dk->dk_refcnt = 1;
+     dk->dk_log2_size = log2_size;
+     dk->dk_kind = DICT_KEYS_UNICODE;
+     dk->dk_nentries = 0;
+     dk->dk_usable = usable;
+     dk->dk_version = 0;
+     memset(&dk->dk_indices[0], 0xff, es<<log2_size);
+     memset(DK_ENTRIES(dk), 0, sizeof(PyDictKeyEntry) * usable);
+     return dk;
+ }
+ 
+
+commit a7252f88d3fa33036bdd6036b8c97bc785ed6f17
+Date:   Wed Oct 6 13:19:53 2021 +0100
+
+    bpo-40116: Add insertion order bit-vector to dict values to allow dicts to share keys more freely. (GH-28520)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -533,55 +549,55 @@
+ new_keys_object(uint8_t log2_size)
+ {
+     PyDictKeysObject *dk;
+     Py_ssize_t es, usable;
+ 
+     assert(log2_size >= PyDict_LOG_MINSIZE);
+ 
+     usable = USABLE_FRACTION(1<<log2_size);
+     if (log2_size <= 7) {
+         es = 1;
+     }
+     else if (log2_size <= 15) {
+         es = 2;
+     }
+ #if SIZEOF_VOID_P > 4
+     else if (log2_size <= 31) {
+         es = 4;
+     }
+ #endif
+     else {
+         es = sizeof(Py_ssize_t);
+     }
+ 
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_keys_object() must not be called after _PyDict_Fini()
+     assert(state->keys_numfree != -1);
+ #endif
+     if (log2_size == PyDict_LOG_MINSIZE && state->keys_numfree > 0) {
+         dk = state->keys_free_list[--state->keys_numfree];
+     }
+     else
+     {
+         dk = PyObject_Malloc(sizeof(PyDictKeysObject)
+                              + (es<<log2_size)
+                              + sizeof(PyDictKeyEntry) * usable);
+         if (dk == NULL) {
+             PyErr_NoMemory();
+             return NULL;
+         }
+     }
+ #ifdef Py_REF_DEBUG
+     _Py_RefTotal++;
+ #endif
+     dk->dk_refcnt = 1;
+     dk->dk_log2_size = log2_size;
+-    dk->dk_usable = usable;
+     dk->dk_kind = DICT_KEYS_UNICODE;
+     dk->dk_nentries = 0;
++    dk->dk_usable = usable;
+     dk->dk_version = 0;
+     memset(&dk->dk_indices[0], 0xff, es<<log2_size);
+     memset(DK_ENTRIES(dk), 0, sizeof(PyDictKeyEntry) * usable);
+     return dk;
+ }
+ 
+
+[CORR] **new** commit 21dd43c01d6b9cd50512c9ab6d83c97cde3bf115
+Date:   Sat May 29 01:40:12 2021 +0100
+
+    Fix MSVC compiler warnings in dictobject.c (GH-26432)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -553,55 +553,55 @@
+ new_keys_object(uint8_t log2_size)
+ {
+     PyDictKeysObject *dk;
+     Py_ssize_t es, usable;
+ 
+     assert(log2_size >= PyDict_LOG_MINSIZE);
+ 
+     usable = USABLE_FRACTION(1<<log2_size);
+     if (log2_size <= 7) {
+         es = 1;
+     }
+     else if (log2_size <= 15) {
+         es = 2;
+     }
+ #if SIZEOF_VOID_P > 4
+     else if (log2_size <= 31) {
+         es = 4;
+     }
+ #endif
+     else {
+         es = sizeof(Py_ssize_t);
+     }
+ 
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_keys_object() must not be called after _PyDict_Fini()
+     assert(state->keys_numfree != -1);
+ #endif
+     if (log2_size == PyDict_LOG_MINSIZE && state->keys_numfree > 0) {
+         dk = state->keys_free_list[--state->keys_numfree];
+     }
+     else
+     {
+         dk = PyObject_Malloc(sizeof(PyDictKeysObject)
+                              + (es<<log2_size)
+                              + sizeof(PyDictKeyEntry) * usable);
+         if (dk == NULL) {
+             PyErr_NoMemory();
+             return NULL;
+         }
+     }
+ #ifdef Py_REF_DEBUG
+     _Py_RefTotal++;
+ #endif
+     dk->dk_refcnt = 1;
+     dk->dk_log2_size = log2_size;
+     dk->dk_usable = usable;
+     dk->dk_kind = DICT_KEYS_UNICODE;
+     dk->dk_nentries = 0;
+     dk->dk_version = 0;
+-    memset(&dk->dk_indices[0], 0xff, es * (1<<log2_size));
++    memset(&dk->dk_indices[0], 0xff, es<<log2_size);
+     memset(DK_ENTRIES(dk), 0, sizeof(PyDictKeyEntry) * usable);
+     return dk;
+ }
+ 
+
+[FUNC] **new** commit f8a95df84bcedebc0aa7132b3d1a4e8f000914bc
+Date:   Fri May 28 09:54:10 2021 +0100
+
+    bpo-44206: Add a version number to dictionary keys (GH-26333)
+    
+    * Store log2(size) instead of size in dict-keys.
+    
+    * Use enum instead of function pointer to record kind of keys.
+    
+    * Add version number to dict keys.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -566,55 +553,55 @@
+-new_keys_object(Py_ssize_t size)
++new_keys_object(uint8_t log2_size)
+ {
+     PyDictKeysObject *dk;
+     Py_ssize_t es, usable;
+ 
+-    assert(size >= PyDict_MINSIZE);
+-    assert(IS_POWER_OF_2(size));
++    assert(log2_size >= PyDict_LOG_MINSIZE);
+ 
+-    usable = USABLE_FRACTION(size);
+-    if (size <= 0xff) {
++    usable = USABLE_FRACTION(1<<log2_size);
++    if (log2_size <= 7) {
+         es = 1;
+     }
+-    else if (size <= 0xffff) {
++    else if (log2_size <= 15) {
+         es = 2;
+     }
+ #if SIZEOF_VOID_P > 4
+-    else if (size <= 0xffffffff) {
++    else if (log2_size <= 31) {
+         es = 4;
+     }
+ #endif
+     else {
+         es = sizeof(Py_ssize_t);
+     }
+ 
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_keys_object() must not be called after _PyDict_Fini()
+     assert(state->keys_numfree != -1);
+ #endif
+-    if (size == PyDict_MINSIZE && state->keys_numfree > 0) {
++    if (log2_size == PyDict_LOG_MINSIZE && state->keys_numfree > 0) {
+         dk = state->keys_free_list[--state->keys_numfree];
+     }
+     else
+     {
+         dk = PyObject_Malloc(sizeof(PyDictKeysObject)
+-                             + es * size
++                             + (es<<log2_size)
+                              + sizeof(PyDictKeyEntry) * usable);
+         if (dk == NULL) {
+             PyErr_NoMemory();
+             return NULL;
+         }
+     }
+ #ifdef Py_REF_DEBUG
+     _Py_RefTotal++;
+ #endif
+     dk->dk_refcnt = 1;
+-    dk->dk_size = size;
++    dk->dk_log2_size = log2_size;
+     dk->dk_usable = usable;
+-    dk->dk_lookup = lookdict_unicode_nodummy;
++    dk->dk_kind = DICT_KEYS_UNICODE;
+     dk->dk_nentries = 0;
+-    memset(&dk->dk_indices[0], 0xff, es * size);
++    dk->dk_version = 0;
++    memset(&dk->dk_indices[0], 0xff, es * (1<<log2_size));
+     memset(DK_ENTRIES(dk), 0, sizeof(PyDictKeyEntry) * usable);
+     return dk;
+ }
+ 
+
+commit 25db2b361beb865192a3424830ddcb0ae4b17318
+Date:   Tue Feb 8 11:50:38 2022 +0000
+
+    bpo-46675: Allow object value arrays and split key dictionaries larger than 16 (GH-31191)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -637,6 +643,15 @@
+ new_values(Py_ssize_t size)
+ {
+-    Py_ssize_t n = sizeof(PyDictValues) + sizeof(PyObject *) * (size-1);
+-    return (PyDictValues*)PyMem_Malloc(n);
++    assert(size > 0);
++    size_t prefix_size = _Py_SIZE_ROUND_UP(size+2, sizeof(PyObject *));
++    assert(prefix_size < 256);
++    size_t n = prefix_size + size * sizeof(PyObject *);
++    uint8_t *mem = PyMem_Malloc(n);
++    if (mem == NULL) {
++        return NULL;
++    }
++    assert(prefix_size % sizeof(PyObject *) == 0);
++    mem[prefix_size-1] = (uint8_t)prefix_size;
++    return (PyDictValues*)(mem + prefix_size);
+ }
+ 
+
+commit a7252f88d3fa33036bdd6036b8c97bc785ed6f17
+Date:   Wed Oct 6 13:19:53 2021 +0100
+
+    bpo-40116: Add insertion order bit-vector to dict values to allow dicts to share keys more freely. (GH-28520)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -609,1 +626,6 @@
+-#define new_values(size) PyMem_NEW(PyObject *, size)
++new_values(Py_ssize_t size)
++{
++    Py_ssize_t n = sizeof(PyDictValues) + sizeof(PyObject *) * (size-1);
++    return (PyDictValues*)PyMem_Malloc(n);
++}
++
+
+[CORR] **new** commit ab383eb6f03896b0ef6634ee3d776344fcb9e5b8
+Date:   Thu May 13 08:54:17 2021 +0100
+
+    bpo-44114: Fix dictkeys_reversed and dictvalues_reversed function signatures (GH-26062)
+    
+    These are passed and called as PyCFunction, however they are defined here without the (ignored) args parameter.
+    
+    This works fine in some C compilers, but fails in webassembly or anything else that has strict function pointer call type checking.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -4912,2 +4912,2 @@
+-static PyObject* dictvalues_reversed(_PyDictViewObject *dv);
++static PyObject* dictvalues_reversed(_PyDictViewObject *dv, PyObject *Py_UNUSED(ignored));
+ 
+
+commit ab383eb6f03896b0ef6634ee3d776344fcb9e5b8
+Date:   Thu May 13 08:54:17 2021 +0100
+
+    bpo-44114: Fix dictkeys_reversed and dictvalues_reversed function signatures (GH-26062)
+    
+    These are passed and called as PyCFunction, however they are defined here without the (ignored) args parameter.
+    
+    This works fine in some C compilers, but fails in webassembly or anything else that has strict function pointer call type checking.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -4829,2 +4829,2 @@
+-static PyObject* dictitems_reversed(_PyDictViewObject *dv);
++static PyObject* dictitems_reversed(_PyDictViewObject *dv, PyObject *Py_UNUSED(ignored));
+ 
+
+[FUNC] **new** commit cf496d657a1a82eaf9ebfb47d721676fef6effa5
+Date:   Tue Jan 11 09:37:24 2022 -0700
+
+    bpo-45953: Statically allocate and initialize global bytes objects. (gh-30096)
+    
+    The empty bytes object (b'') and the 256 one-character bytes objects were allocated at runtime init.  Now we statically allocate and initialize them.
+    
+    https://bugs.python.org/issue45953
+
+diff --git a/Objects/bytesobject.c b/Objects/bytesobject.c
+--- a/Objects/bytesobject.c
++++ b/Objects/bytesobject.c
+@@ -142,36 +117,27 @@
+ PyBytes_FromStringAndSize(const char *str, Py_ssize_t size)
+ {
+     PyBytesObject *op;
+     if (size < 0) {
+         PyErr_SetString(PyExc_SystemError,
+             "Negative size passed to PyBytes_FromStringAndSize");
+         return NULL;
+     }
+     if (size == 1 && str != NULL) {
+-        struct _Py_bytes_state *state = get_bytes_state();
+-        op = state->characters[*str & UCHAR_MAX];
+-        if (op != NULL) {
+-            Py_INCREF(op);
+-            return (PyObject *)op;
+-        }
++        op = CHARACTER(*str & 255);
++        Py_INCREF(op);
++        return (PyObject *)op;
+     }
+     if (size == 0) {
+         return bytes_new_empty();
+     }
+ 
+     op = (PyBytesObject *)_PyBytes_FromSize(size, 0);
+     if (op == NULL)
+         return NULL;
+     if (str == NULL)
+         return (PyObject *) op;
+ 
+     memcpy(op->ob_sval, str, size);
+-    /* share short strings */
+-    if (size == 1) {
+-        struct _Py_bytes_state *state = get_bytes_state();
+-        Py_INCREF(op);
+-        state->characters[*str & UCHAR_MAX] = op;
+-    }
+     return (PyObject *) op;
+ }
+ 
+
+commit cf496d657a1a82eaf9ebfb47d721676fef6effa5
+Date:   Tue Jan 11 09:37:24 2022 -0700
+
+    bpo-45953: Statically allocate and initialize global bytes objects. (gh-30096)
+    
+    The empty bytes object (b'') and the 256 one-character bytes objects were allocated at runtime init.  Now we statically allocate and initialize them.
+    
+    https://bugs.python.org/issue45953
+
+diff --git a/Objects/bytesobject.c b/Objects/bytesobject.c
+--- a/Objects/bytesobject.c
++++ b/Objects/bytesobject.c
+@@ -142,36 +117,27 @@
+ PyBytes_FromStringAndSize(const char *str, Py_ssize_t size)
+ {
+     PyBytesObject *op;
+     if (size < 0) {
+         PyErr_SetString(PyExc_SystemError,
+             "Negative size passed to PyBytes_FromStringAndSize");
+         return NULL;
+     }
+     if (size == 1 && str != NULL) {
+-        struct _Py_bytes_state *state = get_bytes_state();
+-        op = state->characters[*str & UCHAR_MAX];
+-        if (op != NULL) {
+-            Py_INCREF(op);
+-            return (PyObject *)op;
+-        }
++        op = CHARACTER(*str & 255);
++        Py_INCREF(op);
++        return (PyObject *)op;
+     }
+     if (size == 0) {
+         return bytes_new_empty();
+     }
+ 
+     op = (PyBytesObject *)_PyBytes_FromSize(size, 0);
+     if (op == NULL)
+         return NULL;
+     if (str == NULL)
+         return (PyObject *) op;
+ 
+     memcpy(op->ob_sval, str, size);
+-    /* share short strings */
+-    if (size == 1) {
+-        struct _Py_bytes_state *state = get_bytes_state();
+-        Py_INCREF(op);
+-        state->characters[*str & UCHAR_MAX] = op;
+-    }
+     return (PyObject *) op;
+ }
+ 
+
+[FUNC] **new** commit 8370e07e1e5b626e78ddc7aadbfaf248976c4454
+Date:   Wed Mar 24 02:23:01 2021 +0100
+
+    bpo-43244: Remove the pyarena.h header (GH-25007)
+    
+    Remove the pyarena.h header file with functions:
+    
+    * PyArena_New()
+    * PyArena_Free()
+    * PyArena_Malloc()
+    * PyArena_AddPyObject()
+    
+    These functions were undocumented, excluded from the limited C API,
+    and were only used internally by the compiler.
+    
+    Add pycore_pyarena.h header. Rename functions:
+    
+    * PyArena_New() => _PyArena_New()
+    * PyArena_Free() => _PyArena_Free()
+    * PyArena_Malloc() => _PyArena_Malloc()
+    * PyArena_AddPyObject() => _PyArena_AddPyObject()
+
+diff --git a/Python/pyarena.c b/Python/pyarena.c
+--- a/Python/pyarena.c
++++ b/Python/pyarena.c
+@@ -180,22 +181,22 @@
+-PyArena_Malloc(PyArena *arena, size_t size)
++_PyArena_Malloc(PyArena *arena, size_t size)
+ {
+     void *p = block_alloc(arena->a_cur, size);
+     if (!p)
+         return PyErr_NoMemory();
+ #if defined(Py_DEBUG)
+     arena->total_allocs++;
+     arena->total_size += size;
+ #endif
+     /* Reset cur if we allocated a new block. */
+     if (arena->a_cur->ab_next) {
+         arena->a_cur = arena->a_cur->ab_next;
+ #if defined(Py_DEBUG)
+         arena->total_blocks++;
+         arena->total_block_size += arena->a_cur->ab_size;
+         if (arena->a_cur->ab_size > DEFAULT_BLOCK_SIZE)
+             ++arena->total_big_blocks;
+ #endif
+     }
+     return p;
+ }
+ 
+
+commit 8370e07e1e5b626e78ddc7aadbfaf248976c4454
+Date:   Wed Mar 24 02:23:01 2021 +0100
+
+    bpo-43244: Remove the pyarena.h header (GH-25007)
+    
+    Remove the pyarena.h header file with functions:
+    
+    * PyArena_New()
+    * PyArena_Free()
+    * PyArena_Malloc()
+    * PyArena_AddPyObject()
+    
+    These functions were undocumented, excluded from the limited C API,
+    and were only used internally by the compiler.
+    
+    Add pycore_pyarena.h header. Rename functions:
+    
+    * PyArena_New() => _PyArena_New()
+    * PyArena_Free() => _PyArena_Free()
+    * PyArena_Malloc() => _PyArena_Malloc()
+    * PyArena_AddPyObject() => _PyArena_AddPyObject()
+
+diff --git a/Python/pyarena.c b/Python/pyarena.c
+--- a/Python/pyarena.c
++++ b/Python/pyarena.c
+@@ -128,28 +129,28 @@
+-PyArena_New()
++_PyArena_New(void)
+ {
+     PyArena* arena = (PyArena *)PyMem_Malloc(sizeof(PyArena));
+     if (!arena)
+         return (PyArena*)PyErr_NoMemory();
+ 
+     arena->a_head = block_new(DEFAULT_BLOCK_SIZE);
+     arena->a_cur = arena->a_head;
+     if (!arena->a_head) {
+         PyMem_Free((void *)arena);
+         return (PyArena*)PyErr_NoMemory();
+     }
+     arena->a_objects = PyList_New(0);
+     if (!arena->a_objects) {
+         block_free(arena->a_head);
+         PyMem_Free((void *)arena);
+         return (PyArena*)PyErr_NoMemory();
+     }
+ #if defined(Py_DEBUG)
+     arena->total_allocs = 0;
+     arena->total_size = 0;
+     arena->total_blocks = 1;
+     arena->total_block_size = DEFAULT_BLOCK_SIZE;
+     arena->total_big_blocks = 0;
+ #endif
+     return arena;
+ }
+ 
+
+commit 8319114feedd2a5b77378bba24eb9fb2689c5033
+Date:   Tue Dec 7 16:02:53 2021 +0000
+
+    bpo-45947: Place dict and values pointer at fixed (negative) offset just before GC header. (GH-29879)
+    
+    * Place __dict__ immediately before GC header for plain Python objects.
+    
+    * Fix up lazy dict creation logic to use managed dict pointers.
+    
+    * Manage values pointer, placing them directly before managed dict pointers.
+    
+    * Convert hint-based load/store attr specialization target managed dict classes.
+    
+    * Specialize LOAD_METHOD for managed dict objects.
+    
+    * Remove unsafe _PyObject_GC_Calloc function.
+    
+    * Remove unsafe _PyObject_GC_Malloc() function.
+    
+    * Add comment explaning use of Py_TPFLAGS_MANAGED_DICT.
+
+diff --git a/Modules/gcmodule.c b/Modules/gcmodule.c
+--- a/Modules/gcmodule.c
++++ b/Modules/gcmodule.c
+@@ -2334,13 +2327,14 @@
+ PyObject_GC_Del(void *op)
+ {
++    size_t presize = _PyType_PreHeaderSize(((PyObject *)op)->ob_type);
+     PyGC_Head *g = AS_GC(op);
+     if (_PyObject_GC_IS_TRACKED(op)) {
+         gc_list_remove(g);
+     }
+     GCState *gcstate = get_gc_state();
+     if (gcstate->generations[0].count > 0) {
+         gcstate->generations[0].count--;
+     }
+-    PyObject_Free(g);
++    PyObject_Free(((char *)op)-presize);
+ }
+ 
+
+[FUNC] **new** commit 3359cab038968935b40344fad7c30d211f9692e4
+Date:   Fri Apr 2 15:45:37 2021 +0200
+
+    bpo-43688: Support the limited C API in debug mode (GH-25131)
+    
+    The limited C API is now supported if Python is built in debug mode
+    (if the Py_DEBUG macro is defined). In the limited C API, the
+    Py_INCREF() and Py_DECREF() functions are now implemented as opaque
+    function calls, rather than accessing directly the PyObject.ob_refcnt
+    member, if Python is built in debug mode and the Py_LIMITED_API macro
+    targets Python 3.10 or newer. It became possible to support the
+    limited C API in debug mode because the PyObject structure is the
+    same in release and debug mode since Python 3.8 (see bpo-36465).
+    
+    The limited C API is still not supported in the --with-trace-refs
+    special build (Py_TRACE_REFS macro).
+
+diff --git a/Objects/object.c b/Objects/object.c
+--- a/Objects/object.c
++++ b/Objects/object.c
+@@ -139,0 +151,5 @@
++_Py_DecRef(PyObject *o)
++{
++    Py_DECREF(o);
++}
++
+[FUNC] **new** commit c45fa1a5d9b419cf13ad4b5a7cb453956495b83e
+Date:   Tue Jul 6 21:04:33 2021 +0300
+
+    bpo-44490: Add __parameters__ and __getitem__ to types.Union (GH-26980)
+    
+    Co-authored-by: Ken Jin <28750310+Fidget-Spinner@users.noreply.github.com>
+    Co-authored-by: Guido van Rossum <gvanrossum@gmail.com>
+
+diff --git a/Objects/unionobject.c b/Objects/unionobject.c
+--- a/Objects/unionobject.c
++++ b/Objects/unionobject.c
+@@ -14,10 +15,11 @@
+ unionobject_dealloc(PyObject *self)
+ {
+     unionobject *alias = (unionobject *)self;
+ 
+     _PyObject_GC_UNTRACK(self);
+ 
+     Py_XDECREF(alias->args);
++    Py_XDECREF(alias->parameters);
+     Py_TYPE(self)->tp_free(self);
+ }
+ 
+
+[FUNC] **new** commit 1097384ce964dd63686b1aac706cd0fa764c2dc9
+Date:   Sat Jul 3 20:12:11 2021 +0800
+
+    bpo-44553 : Implement GC methods for types.Union (GH-26993)
+
+diff --git a/Objects/unionobject.c b/Objects/unionobject.c
+--- a/Objects/unionobject.c
++++ b/Objects/unionobject.c
+@@ -13,8 +14,10 @@
+ unionobject_dealloc(PyObject *self)
+ {
+     unionobject *alias = (unionobject *)self;
+ 
++    _PyObject_GC_UNTRACK(self);
++
+     Py_XDECREF(alias->args);
+     Py_TYPE(self)->tp_free(self);
+ }
+ 
+
+commit 713bb19356bce9b8f2b95461834fe1dae505f889
+Date:   Wed Oct 13 17:22:14 2021 +0200
+
+    bpo-45434: Mark the PyTokenizer C API as private (GH-28924)
+    
+    Rename PyTokenize functions to mark them as private:
+    
+    * PyTokenizer_FindEncodingFilename() => _PyTokenizer_FindEncodingFilename()
+    * PyTokenizer_FromString() => _PyTokenizer_FromString()
+    * PyTokenizer_FromFile() => _PyTokenizer_FromFile()
+    * PyTokenizer_FromUTF8() => _PyTokenizer_FromUTF8()
+    * PyTokenizer_Free() => _PyTokenizer_Free()
+    * PyTokenizer_Get() => _PyTokenizer_Get()
+    
+    Remove the unused PyTokenizer_FindEncoding() function.
+    
+    import.c: remove unused #include "errcode.h".
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -108,13 +108,13 @@
+ error_ret(struct tok_state *tok) /* XXX */
+ {
+     tok->decoding_erred = 1;
+-    if (tok->fp != NULL && tok->buf != NULL) /* see PyTokenizer_Free */
++    if (tok->fp != NULL && tok->buf != NULL) /* see _PyTokenizer_Free */
+         PyMem_Free(tok->buf);
+     tok->buf = tok->cur = tok->inp = NULL;
+     tok->start = NULL;
+     tok->end = NULL;
+     tok->done = E_DECODE;
+     return NULL;                /* as if it were EOF */
+ }
+ 
+ 
+
+commit 713bb19356bce9b8f2b95461834fe1dae505f889
+Date:   Wed Oct 13 17:22:14 2021 +0200
+
+    bpo-45434: Mark the PyTokenizer C API as private (GH-28924)
+    
+    Rename PyTokenize functions to mark them as private:
+    
+    * PyTokenizer_FindEncodingFilename() => _PyTokenizer_FindEncodingFilename()
+    * PyTokenizer_FromString() => _PyTokenizer_FromString()
+    * PyTokenizer_FromFile() => _PyTokenizer_FromFile()
+    * PyTokenizer_FromUTF8() => _PyTokenizer_FromUTF8()
+    * PyTokenizer_Free() => _PyTokenizer_Free()
+    * PyTokenizer_Get() => _PyTokenizer_Get()
+    
+    Remove the unused PyTokenizer_FindEncoding() function.
+    
+    import.c: remove unused #include "errcode.h".
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -785,20 +785,20 @@
+-PyTokenizer_Free(struct tok_state *tok)
++_PyTokenizer_Free(struct tok_state *tok)
+ {
+     if (tok->encoding != NULL) {
+         PyMem_Free(tok->encoding);
+     }
+     Py_XDECREF(tok->decoding_readline);
+     Py_XDECREF(tok->decoding_buffer);
+     Py_XDECREF(tok->filename);
+     if (tok->fp != NULL && tok->buf != NULL) {
+         PyMem_Free(tok->buf);
+     }
+     if (tok->input) {
+         PyMem_Free(tok->input);
+     }
+     if (tok->interactive_src_start != NULL) {
+         PyMem_Free(tok->interactive_src_start);
+     }
+     PyMem_Free(tok);
+ }
+ 
+
+[CORR] **new** commit cd8dcbc851fcc312722cdb5544c2f25cf46b3f8a
+Date:   Sun Mar 14 04:38:40 2021 +0100
+
+    bpo-43410: Fix crash in the parser when producing syntax errors when reading from stdin (GH-24763)
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -808,16 +844,20 @@
+ PyTokenizer_Free(struct tok_state *tok)
+ {
+-    if (tok->encoding != NULL)
++    if (tok->encoding != NULL) {
+         PyMem_Free(tok->encoding);
++    }
+     Py_XDECREF(tok->decoding_readline);
+     Py_XDECREF(tok->decoding_buffer);
+     Py_XDECREF(tok->filename);
+-    if (tok->fp != NULL && tok->buf != NULL)
++    if (tok->fp != NULL && tok->buf != NULL) {
+         PyMem_Free(tok->buf);
+-    if (tok->input)
++    }
++    if (tok->input) {
+         PyMem_Free(tok->input);
+-    if (tok->stdin_content)
+-        PyMem_Free(tok->stdin_content);
++    }
++    if (tok->interactive_src_start != NULL) {
++        PyMem_Free(tok->interactive_src_start);
++    }
+     PyMem_Free(tok);
+ }
+ 
+
+[CORR] **new** commit e5fe509054183bed9aef42c92da8407d339e8af8
+Date:   Thu Jan 14 23:36:30 2021 +0200
+
+    bpo-42827: Fix crash on SyntaxError in multiline expressions (GH-24140)
+    
+    When trying to extract the error line for the error message there
+    are two distinct cases:
+    
+    1. The input comes from a file, which means that we can extract the
+       error line by using `PyErr_ProgramTextObject` and which we already
+       do.
+    2. The input does not come from a file, at which point we need to get
+       the source code from the tokenizer:
+       * If the tokenizer's current line number is the same with the line
+         of the error, we get the line from `tok->buf` and we're ready.
+       * Else, we can extract the error line from the source code in the
+         following two ways:
+         * If the input comes from a string we have all the input
+           in `tok->str` and we can extract the error line from it.
+         * If the input comes from stdin, i.e. the interactive prompt, we
+           do not have access to the previous line. That's why a new
+           field `tok->stdin_content` is added which holds the whole input for the
+           current (multiline) statement or expression. We can then extract the
+           error line from `tok->stdin_content` like we do in the string case above.
+    
+    Co-authored-by: Pablo Galindo <Pablogsal@gmail.com>
+
+diff --git a/Parser/tokenizer.c b/Parser/tokenizer.c
+--- a/Parser/tokenizer.c
++++ b/Parser/tokenizer.c
+@@ -808,14 +809,16 @@
+ PyTokenizer_Free(struct tok_state *tok)
+ {
+     if (tok->encoding != NULL)
+         PyMem_Free(tok->encoding);
+     Py_XDECREF(tok->decoding_readline);
+     Py_XDECREF(tok->decoding_buffer);
+     Py_XDECREF(tok->filename);
+     if (tok->fp != NULL && tok->buf != NULL)
+         PyMem_Free(tok->buf);
+     if (tok->input)
+         PyMem_Free(tok->input);
++    if (tok->stdin_content)
++        PyMem_Free(tok->stdin_content);
+     PyMem_Free(tok);
+ }
+ 
+
+commit 9942f42a93ccda047fd3558c47b822e99afe10c0
+Date:   Thu Oct 21 16:12:20 2021 +0300
+
+    bpo-45522: Allow to disable freelists on build time (GH-29056)
+    
+    
+    
+    Freelists for object structs can now be disabled. A new ``configure``
+    option ``--without-freelists`` can be used to disable all freelists
+    except empty tuple singleton. Internal Py*_MAXFREELIST macros can now
+    be defined as 0 without causing compiler warnings and segfaults.
+    
+    Signed-off-by: Christian Heimes <christian@python.org>
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -252,14 +254,16 @@
+ _PyDict_ClearFreeList(PyInterpreterState *interp)
+ {
++#if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = &interp->dict_state;
+     while (state->numfree) {
+         PyDictObject *op = state->free_list[--state->numfree];
+         assert(PyDict_CheckExact(op));
+         PyObject_GC_Del(op);
+     }
+     while (state->keys_numfree) {
+         PyObject_Free(state->keys_free_list[--state->keys_numfree]);
+     }
++#endif
+ }
+ 
+ 
+
+[FUNC] **new** commit bcb094b41f7fe4dd1686c50891d85632fcf0d481
+Date:   Fri Feb 19 15:10:45 2021 +0100
+
+    bpo-43268: Pass interp rather than tstate to internal functions (GH-24580)
+    
+    Pass the current interpreter (interp) rather than the current Python
+    thread state (tstate) to internal functions which only use the
+    interpreter.
+    
+    Modified functions:
+    
+    * _PyXXX_Fini() and _PyXXX_ClearFreeList() functions
+    * _PyEval_SignalAsyncExc(), make_pending_calls()
+    * _PySys_GetObject(), sys_set_object(), sys_set_object_id(), sys_set_object_str()
+    * should_audit(), set_flags_from_config(), make_flags()
+    * _PyAtExit_Call()
+    * init_stdio_encoding()
+    * etc.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -263,14 +263,14 @@
+-_PyDict_ClearFreeList(PyThreadState *tstate)
++_PyDict_ClearFreeList(PyInterpreterState *interp)
+ {
+-    struct _Py_dict_state *state = &tstate->interp->dict_state;
++    struct _Py_dict_state *state = &interp->dict_state;
+     while (state->numfree) {
+         PyDictObject *op = state->free_list[--state->numfree];
+         assert(PyDict_CheckExact(op));
+         PyObject_GC_Del(op);
+     }
+     while (state->keys_numfree) {
+         PyObject_Free(state->keys_free_list[--state->keys_numfree]);
+     }
+ }
+ 
+ 
+
+commit 03642df1a1cfddcd740b62e78bddfa3ea6863da4
+Date:   Wed Mar 2 19:05:12 2022 +0900
+
+    dict: Internal cleanup (GH-31641)
+    
+    * Make empty_key from split table to combined table.
+    * Use unicode_get_hash() when possible.
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -2365,40 +2352,38 @@
+ dict_dealloc(PyDictObject *mp)
+ {
+     PyDictValues *values = mp->ma_values;
+     PyDictKeysObject *keys = mp->ma_keys;
+     Py_ssize_t i, n;
+ 
+     /* bpo-31095: UnTrack is needed before calling any callbacks */
+     PyObject_GC_UnTrack(mp);
+     Py_TRASHCAN_BEGIN(mp, dict_dealloc)
+     if (values != NULL) {
+-        if (values != empty_values) {
+-            for (i = 0, n = mp->ma_keys->dk_nentries; i < n; i++) {
+-                Py_XDECREF(values->values[i]);
+-            }
+-            free_values(values);
++        for (i = 0, n = mp->ma_keys->dk_nentries; i < n; i++) {
++            Py_XDECREF(values->values[i]);
+         }
++        free_values(values);
+         dictkeys_decref(keys);
+     }
+     else if (keys != NULL) {
+-        assert(keys->dk_refcnt == 1);
++        assert(keys->dk_refcnt == 1 || keys == Py_EMPTY_KEYS);
+         dictkeys_decref(keys);
+     }
+ #if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_dict() must not be called after _PyDict_Fini()
+     assert(state->numfree != -1);
+ #endif
+     if (state->numfree < PyDict_MAXFREELIST && Py_IS_TYPE(mp, &PyDict_Type)) {
+         state->free_list[state->numfree++] = mp;
+     }
+     else
+ #endif
+     {
+         Py_TYPE(mp)->tp_free((PyObject *)mp);
+     }
+     Py_TRASHCAN_END
+ }
+ 
+ 
+
+commit 9942f42a93ccda047fd3558c47b822e99afe10c0
+Date:   Thu Oct 21 16:12:20 2021 +0300
+
+    bpo-45522: Allow to disable freelists on build time (GH-29056)
+    
+    
+    
+    Freelists for object structs can now be disabled. A new ``configure``
+    option ``--without-freelists`` can be used to disable all freelists
+    except empty tuple singleton. Internal Py*_MAXFREELIST macros can now
+    be defined as 0 without causing compiler warnings and segfaults.
+    
+    Signed-off-by: Christian Heimes <christian@python.org>
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -1968,37 +1984,40 @@
+ dict_dealloc(PyDictObject *mp)
+ {
+     PyDictValues *values = mp->ma_values;
+     PyDictKeysObject *keys = mp->ma_keys;
+     Py_ssize_t i, n;
+ 
+     /* bpo-31095: UnTrack is needed before calling any callbacks */
+     PyObject_GC_UnTrack(mp);
+     Py_TRASHCAN_BEGIN(mp, dict_dealloc)
+     if (values != NULL) {
+         if (values != empty_values) {
+             for (i = 0, n = mp->ma_keys->dk_nentries; i < n; i++) {
+                 Py_XDECREF(values->values[i]);
+             }
+             free_values(values);
+         }
+         dictkeys_decref(keys);
+     }
+     else if (keys != NULL) {
+         assert(keys->dk_refcnt == 1);
+         dictkeys_decref(keys);
+     }
++#if PyDict_MAXFREELIST > 0
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_dict() must not be called after _PyDict_Fini()
+     assert(state->numfree != -1);
+ #endif
+     if (state->numfree < PyDict_MAXFREELIST && Py_IS_TYPE(mp, &PyDict_Type)) {
+         state->free_list[state->numfree++] = mp;
+     }
+-    else {
++    else
++#endif
++    {
+         Py_TYPE(mp)->tp_free((PyObject *)mp);
+     }
+     Py_TRASHCAN_END
+ }
+ 
+ 
+
+commit a7252f88d3fa33036bdd6036b8c97bc785ed6f17
+Date:   Wed Oct 6 13:19:53 2021 +0100
+
+    bpo-40116: Add insertion order bit-vector to dict values to allow dicts to share keys more freely. (GH-28520)
+
+diff --git a/Objects/dictobject.c b/Objects/dictobject.c
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -1967,37 +1982,37 @@
+ dict_dealloc(PyDictObject *mp)
+ {
+-    PyObject **values = mp->ma_values;
++    PyDictValues *values = mp->ma_values;
+     PyDictKeysObject *keys = mp->ma_keys;
+     Py_ssize_t i, n;
+ 
+     /* bpo-31095: UnTrack is needed before calling any callbacks */
+     PyObject_GC_UnTrack(mp);
+     Py_TRASHCAN_BEGIN(mp, dict_dealloc)
+     if (values != NULL) {
+         if (values != empty_values) {
+             for (i = 0, n = mp->ma_keys->dk_nentries; i < n; i++) {
+-                Py_XDECREF(values[i]);
++                Py_XDECREF(values->values[i]);
+             }
+             free_values(values);
+         }
+         dictkeys_decref(keys);
+     }
+     else if (keys != NULL) {
+         assert(keys->dk_refcnt == 1);
+         dictkeys_decref(keys);
+     }
+     struct _Py_dict_state *state = get_dict_state();
+ #ifdef Py_DEBUG
+     // new_dict() must not be called after _PyDict_Fini()
+     assert(state->numfree != -1);
+ #endif
+     if (state->numfree < PyDict_MAXFREELIST && Py_IS_TYPE(mp, &PyDict_Type)) {
+         state->free_list[state->numfree++] = mp;
+     }
+     else {
+         Py_TYPE(mp)->tp_free((PyObject *)mp);
+     }
+     Py_TRASHCAN_END
+ }
+ 
+ 
+
+[FUNC] **new** commit 097f74a5a37e2a8a26d529cede456ede7011b66f
+Date:   Mon Feb 7 01:26:58 2022 +0100
+
+    bpo-46670: Define all macros for stringlib (GH-31176)
+    
+    bytesobject.c, bytearrayobject.c and unicodeobject.c now define all
+    macros used by stringlib, to avoid using undefined macros.
+    Fix "gcc -Wundef" warnings.
+
+diff --git a/Objects/bytearrayobject.c b/Objects/bytearrayobject.c
+--- a/Objects/bytearrayobject.c
++++ b/Objects/bytearrayobject.c
+@@ -1060,39 +1060,40 @@
+ bytearray_dealloc(PyByteArrayObject *self)
+ {
+     if (self->ob_exports > 0) {
+         PyErr_SetString(PyExc_SystemError,
+                         "deallocated bytearray object has exported buffers");
+         PyErr_Print();
+     }
+     if (self->ob_bytes != 0) {
+         PyObject_Free(self->ob_bytes);
+     }
+     Py_TYPE(self)->tp_free((PyObject *)self);
+ }
+ 
+ 
+ /* -------------------------------------------------------------------- */
+ /* Methods */
+ 
++#define STRINGLIB_IS_UNICODE 0
+ #define FASTSEARCH fastsearch
+ #define STRINGLIB(F) stringlib_##F
+ #define STRINGLIB_CHAR char
+ #define STRINGLIB_SIZEOF_CHAR 1
+ #define STRINGLIB_LEN PyByteArray_GET_SIZE
+ #define STRINGLIB_STR PyByteArray_AS_STRING
+ #define STRINGLIB_NEW PyByteArray_FromStringAndSize
+ #define STRINGLIB_ISSPACE Py_ISSPACE
+ #define STRINGLIB_ISLINEBREAK(x) ((x == '\n') || (x == '\r'))
+ #define STRINGLIB_CHECK_EXACT PyByteArray_CheckExact
+ #define STRINGLIB_MUTABLE 1
+ 
+ #include "stringlib/fastsearch.h"
+ #include "stringlib/count.h"
+ #include "stringlib/find.h"
+ #include "stringlib/join.h"
+ #include "stringlib/partition.h"
+ #include "stringlib/split.h"
+ #include "stringlib/ctype.h"
+ #include "stringlib/transmogrify.h"
+ 
+ 
+
+commit 8370e07e1e5b626e78ddc7aadbfaf248976c4454
+Date:   Wed Mar 24 02:23:01 2021 +0100
+
+    bpo-43244: Remove the pyarena.h header (GH-25007)
+    
+    Remove the pyarena.h header file with functions:
+    
+    * PyArena_New()
+    * PyArena_Free()
+    * PyArena_Malloc()
+    * PyArena_AddPyObject()
+    
+    These functions were undocumented, excluded from the limited C API,
+    and were only used internally by the compiler.
+    
+    Add pycore_pyarena.h header. Rename functions:
+    
+    * PyArena_New() => _PyArena_New()
+    * PyArena_Free() => _PyArena_Free()
+    * PyArena_Malloc() => _PyArena_Malloc()
+    * PyArena_AddPyObject() => _PyArena_AddPyObject()
+
+diff --git a/Python/pyarena.c b/Python/pyarena.c
+--- a/Python/pyarena.c
++++ b/Python/pyarena.c
+@@ -157,22 +158,22 @@
+-PyArena_Free(PyArena *arena)
++_PyArena_Free(PyArena *arena)
+ {
+     assert(arena);
+ #if defined(Py_DEBUG)
+     /*
+     fprintf(stderr,
+         "alloc=%zu size=%zu blocks=%zu block_size=%zu big=%zu objects=%zu\n",
+         arena->total_allocs, arena->total_size, arena->total_blocks,
+         arena->total_block_size, arena->total_big_blocks,
+         PyList_Size(arena->a_objects));
+     */
+ #endif
+     block_free(arena->a_head);
+     /* This property normally holds, except when the code being compiled
+        is sys.getobjects(0), in which case there will be two references.
+     assert(arena->a_objects->ob_refcnt == 1);
+     */
+ 
+     Py_DECREF(arena->a_objects);
+     PyMem_Free(arena);
+ }
+ 
+

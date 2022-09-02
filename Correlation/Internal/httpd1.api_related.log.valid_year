@@ -1,0 +1,935 @@
+[CORR] **new** commit 58cc83eb7cb4d35e6fe636d55095e09cd9406a94
+Date:   Thu Mar 11 13:59:51 2021 +0000
+
+    Follow up to r1887481: fix skiplisti_init() returned pointer.
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887482 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/tables/apr_skiplist.c b/tables/apr_skiplist.c
+--- a/tables/apr_skiplist.c
++++ b/tables/apr_skiplist.c
+@@ -239,19 +239,19 @@
+ APR_DECLARE(apr_status_t) apr_skiplist_init(apr_skiplist **s, apr_pool_t *p)
+ {
+     apr_status_t rv;
+     apr_skiplist *sl;
+     rv = skiplisti_init(&sl, p);
+     if (rv != APR_SUCCESS) {
+         *s = NULL;
+         return rv;
+     }
+     rv = skiplisti_init(&sl->index, p);
+     if (rv != APR_SUCCESS) {
+         *s = NULL;
+         return rv;
+     }
+     apr_skiplist_set_compare(sl->index, indexing_comp, indexing_compk);
+-    sl = *s;
++    *s = sl;
+     return APR_SUCCESS;
+ }
+ 
+
+[CORR] **new** commit 0938aad6a714e4384f5b799ab25efd13d7fdc65d
+Date:   Thu Mar 11 13:53:56 2021 +0000
+
+    apr_skiplist: Handle ENOMEM from skiplisti_init(), fixing a compiler warning.
+    
+    gcc-10 raises:
+        tables/apr_skiplist.c: In function ‘apr_skiplist_add_index’:
+        tables/apr_skiplist.c:284:16: error: ‘ni’ may be used uninitialized in this function [-Werror=maybe-uninitialized]
+          284 |         nsln = apr_skiplist_insert(ni, m->data);
+              |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    because above skiplisti_init() might return with ENOMEM, leaving ni uninitialized.
+    Since apr_skiplist_add_index returns void, the only option is to abort() in
+    this case.
+    
+    For apr_skiplist_init(), we can forward the APR_ENOMEM to the caller.
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887481 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/tables/apr_skiplist.c b/tables/apr_skiplist.c
+--- a/tables/apr_skiplist.c
++++ b/tables/apr_skiplist.c
+@@ -239,10 +239,19 @@
+ APR_DECLARE(apr_status_t) apr_skiplist_init(apr_skiplist **s, apr_pool_t *p)
+ {
++    apr_status_t rv;
+     apr_skiplist *sl;
+-    skiplisti_init(s, p);
+-    sl = *s;
+-    skiplisti_init(&(sl->index), p);
++    rv = skiplisti_init(&sl, p);
++    if (rv != APR_SUCCESS) {
++        *s = NULL;
++        return rv;
++    }
++    rv = skiplisti_init(&sl->index, p);
++    if (rv != APR_SUCCESS) {
++        *s = NULL;
++        return rv;
++    }
+     apr_skiplist_set_compare(sl->index, indexing_comp, indexing_compk);
++    sl = *s;
+     return APR_SUCCESS;
+ }
+ 
+
+[CORR] **new** commit 66d4ef3de686a67b25b0e9670570cb9aef0f668f
+Date:   Thu Aug 26 12:33:10 2021 +0000
+
+    apr_tables: fix petential left shift of 31 on an int.
+    
+    apr_tables.c:832:10: runtime error: left shift of 1 by 31 places cannot be
+    represented in type 'int'.
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1892618 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/tables/apr_tables.c b/tables/apr_tables.c
+--- a/tables/apr_tables.c
++++ b/tables/apr_tables.c
+@@ -229,103 +229,103 @@
+ APR_DECLARE(char *) apr_array_pstrcat(apr_pool_t *p,
+ 				     const apr_array_header_t *arr,
+ 				     const char sep)
+ {
+     char *cp, *res, **strpp;
+     apr_size_t len;
+     int i;
+ 
+     if (arr->nelts <= 0 || arr->elts == NULL) {    /* Empty table? */
+         return (char *) apr_pcalloc(p, 1);
+     }
+ 
+     /* Pass one --- find length of required string */
+ 
+     len = 0;
+     for (i = 0, strpp = (char **) arr->elts; ; ++strpp) {
+         if (strpp && *strpp != NULL) {
+             len += strlen(*strpp);
+         }
+         if (++i >= arr->nelts) {
+             break;
+ 	}
+         if (sep) {
+             ++len;
+ 	}
+     }
+ 
+     /* Allocate the required string */
+ 
+     res = (char *) apr_palloc(p, len + 1);
+     cp = res;
+ 
+     /* Pass two --- copy the argument strings into the result space */
+ 
+     for (i = 0, strpp = (char **) arr->elts; ; ++strpp) {
+         if (strpp && *strpp != NULL) {
+             len = strlen(*strpp);
+             memcpy(cp, *strpp, len);
+             cp += len;
+         }
+         if (++i >= arr->nelts) {
+             break;
+ 	}
+         if (sep) {
+             *cp++ = sep;
+ 	}
+     }
+ 
+     *cp = '\0';
+ 
+     /* Return the result string */
+ 
+     return res;
+ }
+ 
+ 
+ /*****************************************************************
+  *
+  * The "table" functions.
+  */
+ 
+ #if APR_CHARSET_EBCDIC
+ #define CASE_MASK 0xbfbfbfbf
+ #else
+ #define CASE_MASK 0xdfdfdfdf
+ #endif
+ 
+ #define TABLE_HASH_SIZE 32
+ #define TABLE_INDEX_MASK 0x1f
+ #define TABLE_HASH(key)  (TABLE_INDEX_MASK & *(unsigned char *)(key))
+-#define TABLE_INDEX_IS_INITIALIZED(t, i) ((t)->index_initialized & (1 << (i)))
+-#define TABLE_SET_INDEX_INITIALIZED(t, i) ((t)->index_initialized |= (1 << (i)))
++#define TABLE_INDEX_IS_INITIALIZED(t, i) ((t)->index_initialized & (1u << (i)))
++#define TABLE_SET_INDEX_INITIALIZED(t, i) ((t)->index_initialized |= (1u << (i)))
+ 
+ /* Compute the "checksum" for a key, consisting of the first
+  * 4 bytes, normalized for case-insensitivity and packed into
+  * an int...this checksum allows us to do a single integer
+  * comparison as a fast check to determine whether we can
+  * skip a strcasecmp
+  */
+ #define COMPUTE_KEY_CHECKSUM(key, checksum)    \
+ {                                              \
+     const char *k = (key);                     \
+     apr_uint32_t c = (apr_uint32_t)*k;         \
+     (checksum) = c;                            \
+     (checksum) <<= 8;                          \
+     if (c) {                                   \
+         c = (apr_uint32_t)*++k;                \
+         checksum |= c;                         \
+     }                                          \
+     (checksum) <<= 8;                          \
+     if (c) {                                   \
+         c = (apr_uint32_t)*++k;                \
+         checksum |= c;                         \
+     }                                          \
+     (checksum) <<= 8;                          \
+     if (c) {                                   \
+         c = (apr_uint32_t)*++k;                \
+         checksum |= c;                         \
+     }                                          \
+     checksum &= CASE_MASK;                     \
+ }
+ 
+ /** The opaque string-content table type */
+
+[FUNC] **new** commit 90b2324c3f59fab62d7d44b81e4107852e23d3a4
+Date:   Thu Mar 11 17:36:37 2021 +0000
+
+    Follow up to r1887060: fix compilation on BEOS.
+    
+    poffset is undefined there, by inspection (no BEOS at hand..).
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887506 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/mmap/unix/mmap.c b/mmap/unix/mmap.c
+--- a/mmap/unix/mmap.c
++++ b/mmap/unix/mmap.c
+@@ -79,93 +79,95 @@
+ APR_DECLARE(apr_status_t) apr_mmap_create(apr_mmap_t **new, 
+                                           apr_file_t *file, apr_off_t offset, 
+                                           apr_size_t size, apr_int32_t flag, 
+                                           apr_pool_t *cont)
+ {
+     void *mm;
+ #ifdef BEOS
+     area_id aid = -1;
+     uint32 pages = 0;
+ #else
+     static long psize;
+     apr_off_t poffset = 0;
+     apr_int32_t native_flags = 0;
+ #endif
+ 
+ #if APR_HAS_LARGE_FILES && defined(HAVE_MMAP64)
+ #define mmap mmap64
+ #elif APR_HAS_LARGE_FILES && SIZEOF_OFF_T == 4
+     /* LFS but no mmap64: check for overflow */
+     if ((apr_int64_t)offset + size > INT_MAX)
+         return APR_EINVAL;
+ #endif
+ 
+     if (size == 0)
+         return APR_EINVAL;
+     
+     if (file == NULL || file->filedes == -1 || file->buffered)
+         return APR_EBADF;
+     (*new) = (apr_mmap_t *)apr_pcalloc(cont, sizeof(apr_mmap_t));
+     
+ #ifdef BEOS
+     /* XXX: mmap shouldn't really change the seek offset */
+     apr_file_seek(file, APR_SET, &offset);
+ 
+     /* There seems to be some strange interactions that mean our area must
+      * be set as READ & WRITE or writev will fail!  Go figure...
+      * So we ignore the value in flags and always ask for both READ and WRITE
+      */
+     pages = (size + B_PAGE_SIZE -1) / B_PAGE_SIZE;
+     aid = create_area("apr_mmap", &mm , B_ANY_ADDRESS, pages * B_PAGE_SIZE,
+         B_NO_LOCK, B_WRITE_AREA|B_READ_AREA);
+ 
+     if (aid < B_NO_ERROR) {
+         /* we failed to get an area we can use... */
+         *new = NULL;
+         return APR_ENOMEM;
+     }
+ 
+     if (aid >= B_NO_ERROR)
+         read(file->filedes, mm, size);
+     
+     (*new)->area = aid;
+ #else
+ 
+     if (flag & APR_MMAP_WRITE) {
+         native_flags |= PROT_WRITE;
+     }
+     if (flag & APR_MMAP_READ) {
+         native_flags |= PROT_READ;
+     }
+ 
+ #if defined(_SC_PAGESIZE)
+     if (psize == 0) {
+         psize = sysconf(_SC_PAGESIZE);
+         /* the page size should be a power of two */
+         assert(psize > 0 && (psize & (psize - 1)) == 0);
+     }
+     poffset = offset & (apr_off_t)(psize - 1);
++    (*new)->poffset = poffset;
+ #endif
+ 
+     mm = mmap(NULL, size + poffset,
+               native_flags, MAP_SHARED,
+               file->filedes, offset - poffset);
+ 
+     if (mm == (void *)-1) {
+         /* we failed to get an mmap'd file... */
+         *new = NULL;
+         return errno;
+     }
++
++    mm = (char *)mm + poffset;
+ #endif
+ 
+-    (*new)->mm = (char *)mm + poffset;
+-    (*new)->poffset = poffset;
++    (*new)->mm = mm;
+     (*new)->size = size;
+     (*new)->cntxt = cont;
+     APR_RING_ELEM_INIT(*new, link);
+ 
+     /* register the cleanup... */
+     apr_pool_cleanup_register((*new)->cntxt, (void*)(*new), mmap_cleanup,
+              apr_pool_cleanup_null);
+     return APR_SUCCESS;
+ }
+ 
+
+[CORR] **new** commit 6012bb8cebaeec67435556333af6264ccfc9c42f
+Date:   Thu Mar 11 17:26:56 2021 +0000
+
+    Follow up to r1887060: fix compilation on BEOS.
+    
+    poffset is undefined there, by inspection (no BEOS at hand..).
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887502 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/mmap/unix/mmap.c b/mmap/unix/mmap.c
+--- a/mmap/unix/mmap.c
++++ b/mmap/unix/mmap.c
+@@ -79,95 +79,93 @@
+ APR_DECLARE(apr_status_t) apr_mmap_create(apr_mmap_t **new, 
+                                           apr_file_t *file, apr_off_t offset, 
+                                           apr_size_t size, apr_int32_t flag, 
+                                           apr_pool_t *cont)
+ {
+     void *mm;
+ #ifdef BEOS
+     area_id aid = -1;
+     uint32 pages = 0;
+ #else
+     static long psize;
+     apr_off_t poffset = 0;
+     apr_int32_t native_flags = 0;
+ #endif
+ 
+ #if APR_HAS_LARGE_FILES && defined(HAVE_MMAP64)
+ #define mmap mmap64
+ #elif APR_HAS_LARGE_FILES && SIZEOF_OFF_T == 4
+     /* LFS but no mmap64: check for overflow */
+     if ((apr_int64_t)offset + size > INT_MAX)
+         return APR_EINVAL;
+ #endif
+ 
+     if (size == 0)
+         return APR_EINVAL;
+     
+     if (file == NULL || file->filedes == -1 || file->buffered)
+         return APR_EBADF;
+     (*new) = (apr_mmap_t *)apr_pcalloc(cont, sizeof(apr_mmap_t));
+     
+ #ifdef BEOS
+     /* XXX: mmap shouldn't really change the seek offset */
+     apr_file_seek(file, APR_SET, &offset);
+ 
+     /* There seems to be some strange interactions that mean our area must
+      * be set as READ & WRITE or writev will fail!  Go figure...
+      * So we ignore the value in flags and always ask for both READ and WRITE
+      */
+     pages = (size + B_PAGE_SIZE -1) / B_PAGE_SIZE;
+     aid = create_area("apr_mmap", &mm , B_ANY_ADDRESS, pages * B_PAGE_SIZE,
+         B_NO_LOCK, B_WRITE_AREA|B_READ_AREA);
+ 
+     if (aid < B_NO_ERROR) {
+         /* we failed to get an area we can use... */
+         *new = NULL;
+         return APR_ENOMEM;
+     }
+ 
+     if (aid >= B_NO_ERROR)
+         read(file->filedes, mm, size);
+     
+     (*new)->area = aid;
+ #else
+ 
+     if (flag & APR_MMAP_WRITE) {
+         native_flags |= PROT_WRITE;
+     }
+     if (flag & APR_MMAP_READ) {
+         native_flags |= PROT_READ;
+     }
+ 
+ #if defined(_SC_PAGESIZE)
+     if (psize == 0) {
+         psize = sysconf(_SC_PAGESIZE);
+         /* the page size should be a power of two */
+         assert(psize > 0 && (psize & (psize - 1)) == 0);
+     }
+     poffset = offset & (apr_off_t)(psize - 1);
+-    (*new)->poffset = poffset;
+ #endif
+ 
+     mm = mmap(NULL, size + poffset,
+               native_flags, MAP_SHARED,
+               file->filedes, offset - poffset);
+ 
+     if (mm == (void *)-1) {
+         /* we failed to get an mmap'd file... */
+         *new = NULL;
+         return errno;
+     }
+-
+-    mm = (char *)mm + poffset;
+ #endif
+ 
+-    (*new)->mm = mm;
++    (*new)->mm = (char *)mm + poffset;
++    (*new)->poffset = poffset;
+     (*new)->size = size;
+     (*new)->cntxt = cont;
+     APR_RING_ELEM_INIT(*new, link);
+ 
+     /* register the cleanup... */
+     apr_pool_cleanup_register((*new)->cntxt, (void*)(*new), mmap_cleanup,
+              apr_pool_cleanup_null);
+     return APR_SUCCESS;
+ }
+ 
+
+[CORR] **new** commit 7261729cc2d7e74a4c263a120199bcac57fa1f1e
+Date:   Thu Mar 11 17:25:41 2021 +0000
+
+    Follow up to r1887060: fix compilation on BEOS.
+    
+    poffset is undefined there, by inspection (no BEOS at hand..).
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887500 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/mmap/unix/mmap.c b/mmap/unix/mmap.c
+--- a/mmap/unix/mmap.c
++++ b/mmap/unix/mmap.c
+@@ -79,93 +79,95 @@
+ APR_DECLARE(apr_status_t) apr_mmap_create(apr_mmap_t **new, 
+                                           apr_file_t *file, apr_off_t offset, 
+                                           apr_size_t size, apr_int32_t flag, 
+                                           apr_pool_t *cont)
+ {
+     void *mm;
+ #ifdef BEOS
+     area_id aid = -1;
+     uint32 pages = 0;
+ #else
+     static long psize;
+     apr_off_t poffset = 0;
+     apr_int32_t native_flags = 0;
+ #endif
+ 
+ #if APR_HAS_LARGE_FILES && defined(HAVE_MMAP64)
+ #define mmap mmap64
+ #elif APR_HAS_LARGE_FILES && SIZEOF_OFF_T == 4
+     /* LFS but no mmap64: check for overflow */
+     if ((apr_int64_t)offset + size > INT_MAX)
+         return APR_EINVAL;
+ #endif
+ 
+     if (size == 0)
+         return APR_EINVAL;
+     
+     if (file == NULL || file->filedes == -1 || file->buffered)
+         return APR_EBADF;
+     (*new) = (apr_mmap_t *)apr_pcalloc(cont, sizeof(apr_mmap_t));
+     
+ #ifdef BEOS
+     /* XXX: mmap shouldn't really change the seek offset */
+     apr_file_seek(file, APR_SET, &offset);
+ 
+     /* There seems to be some strange interactions that mean our area must
+      * be set as READ & WRITE or writev will fail!  Go figure...
+      * So we ignore the value in flags and always ask for both READ and WRITE
+      */
+     pages = (size + B_PAGE_SIZE -1) / B_PAGE_SIZE;
+     aid = create_area("apr_mmap", &mm , B_ANY_ADDRESS, pages * B_PAGE_SIZE,
+         B_NO_LOCK, B_WRITE_AREA|B_READ_AREA);
+ 
+     if (aid < B_NO_ERROR) {
+         /* we failed to get an area we can use... */
+         *new = NULL;
+         return APR_ENOMEM;
+     }
+ 
+     if (aid >= B_NO_ERROR)
+         read(file->filedes, mm, size);
+     
+     (*new)->area = aid;
+ #else
+ 
+     if (flag & APR_MMAP_WRITE) {
+         native_flags |= PROT_WRITE;
+     }
+     if (flag & APR_MMAP_READ) {
+         native_flags |= PROT_READ;
+     }
+ 
+ #if defined(_SC_PAGESIZE)
+     if (psize == 0) {
+         psize = sysconf(_SC_PAGESIZE);
+         /* the page size should be a power of two */
+         assert(psize > 0 && (psize & (psize - 1)) == 0);
+     }
+     poffset = offset & (apr_off_t)(psize - 1);
++    (*new)->poffset = poffset;
+ #endif
+ 
+     mm = mmap(NULL, size + poffset,
+               native_flags, MAP_SHARED,
+               file->filedes, offset - poffset);
+ 
+     if (mm == (void *)-1) {
+         /* we failed to get an mmap'd file... */
+         *new = NULL;
+         return errno;
+     }
++
++    mm = (char *)mm + poffset;
+ #endif
+ 
+-    (*new)->mm = (char *)mm + poffset;
+-    (*new)->poffset = poffset;
++    (*new)->mm = mm;
+     (*new)->size = size;
+     (*new)->cntxt = cont;
+     APR_RING_ELEM_INIT(*new, link);
+ 
+     /* register the cleanup... */
+     apr_pool_cleanup_register((*new)->cntxt, (void*)(*new), mmap_cleanup,
+              apr_pool_cleanup_null);
+     return APR_SUCCESS;
+ }
+ 
+
+[CORR] **new** commit 17f630750e9e5a40872d8c8c3a48622ed9244d53
+Date:   Tue Mar 2 00:37:18 2021 +0000
+
+    Align apr_mmap()ing offset to a page boundary.  PR 65158.
+    
+    This is requirement for unix systems, and otherwise can cause failures or
+    undefined behaviour with some filesystems.
+    
+    Add apr_mmap_t->poffset on unixes to track the offset to the previous page,
+    relative to the user requested/actual offset. This allows ->mm and ->size to
+    still point to the actual data, while munmap() still deletes the full range
+    from the start of the page.
+    
+    Tests updated accordingly.
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887060 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/mmap/unix/mmap.c b/mmap/unix/mmap.c
+--- a/mmap/unix/mmap.c
++++ b/mmap/unix/mmap.c
+@@ -74,79 +79,93 @@
+ APR_DECLARE(apr_status_t) apr_mmap_create(apr_mmap_t **new, 
+                                           apr_file_t *file, apr_off_t offset, 
+                                           apr_size_t size, apr_int32_t flag, 
+                                           apr_pool_t *cont)
+ {
+     void *mm;
+ #ifdef BEOS
+     area_id aid = -1;
+     uint32 pages = 0;
+ #else
++    static long psize;
++    apr_off_t poffset = 0;
+     apr_int32_t native_flags = 0;
+ #endif
+ 
+ #if APR_HAS_LARGE_FILES && defined(HAVE_MMAP64)
+ #define mmap mmap64
+ #elif APR_HAS_LARGE_FILES && SIZEOF_OFF_T == 4
+     /* LFS but no mmap64: check for overflow */
+     if ((apr_int64_t)offset + size > INT_MAX)
+         return APR_EINVAL;
+ #endif
+ 
+     if (size == 0)
+         return APR_EINVAL;
+     
+     if (file == NULL || file->filedes == -1 || file->buffered)
+         return APR_EBADF;
+     (*new) = (apr_mmap_t *)apr_pcalloc(cont, sizeof(apr_mmap_t));
+     
+ #ifdef BEOS
+     /* XXX: mmap shouldn't really change the seek offset */
+     apr_file_seek(file, APR_SET, &offset);
+ 
+     /* There seems to be some strange interactions that mean our area must
+      * be set as READ & WRITE or writev will fail!  Go figure...
+      * So we ignore the value in flags and always ask for both READ and WRITE
+      */
+     pages = (size + B_PAGE_SIZE -1) / B_PAGE_SIZE;
+     aid = create_area("apr_mmap", &mm , B_ANY_ADDRESS, pages * B_PAGE_SIZE,
+         B_NO_LOCK, B_WRITE_AREA|B_READ_AREA);
+ 
+     if (aid < B_NO_ERROR) {
+         /* we failed to get an area we can use... */
+         *new = NULL;
+         return APR_ENOMEM;
+     }
+ 
+     if (aid >= B_NO_ERROR)
+         read(file->filedes, mm, size);
+     
+     (*new)->area = aid;
+ #else
+ 
+     if (flag & APR_MMAP_WRITE) {
+         native_flags |= PROT_WRITE;
+     }
+     if (flag & APR_MMAP_READ) {
+         native_flags |= PROT_READ;
+     }
+ 
+-    mm = mmap(NULL, size, native_flags, MAP_SHARED, file->filedes, offset);
++#if defined(_SC_PAGESIZE)
++    if (psize == 0) {
++        psize = sysconf(_SC_PAGESIZE);
++        /* the page size should be a power of two */
++        assert(psize > 0 && (psize & (psize - 1)) == 0);
++    }
++    poffset = offset & (apr_off_t)(psize - 1);
++#endif
++
++    mm = mmap(NULL, size + poffset,
++              native_flags, MAP_SHARED,
++              file->filedes, offset - poffset);
+ 
+     if (mm == (void *)-1) {
+         /* we failed to get an mmap'd file... */
+         *new = NULL;
+         return errno;
+     }
+ #endif
+ 
+-    (*new)->mm = mm;
++    (*new)->mm = (char *)mm + poffset;
++    (*new)->poffset = poffset;
+     (*new)->size = size;
+     (*new)->cntxt = cont;
+     APR_RING_ELEM_INIT(*new, link);
+ 
+     /* register the cleanup... */
+     apr_pool_cleanup_register((*new)->cntxt, (void*)(*new), mmap_cleanup,
+              apr_pool_cleanup_null);
+     return APR_SUCCESS;
+ }
+ 
+
+[FUNC] **new** commit fdf6309acb41cc038d76c031d3f7843eb4ac1230
+Date:   Wed Jan 12 12:36:15 2022 +0000
+
+    apr_sockaddr_ip_getbuf: Follow up to r1883728.
+    
+    Return APR_ENOSPC if returned buf is truncated for an AF_UNIX.
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1896956 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/network_io/unix/sockaddr.c b/network_io/unix/sockaddr.c
+--- a/network_io/unix/sockaddr.c
++++ b/network_io/unix/sockaddr.c
+@@ -108,54 +108,55 @@
+ APR_DECLARE(apr_status_t) apr_sockaddr_ip_getbuf(char *buf, apr_size_t buflen,
+                                                  apr_sockaddr_t *sockaddr)
+ {
+ #if APR_HAVE_SOCKADDR_UN
+     if (sockaddr->family == APR_UNIX) {
+-        apr_size_t len = (apr_size_t)sockaddr->ipaddr_len;
+-        apr_cpystrn(buf, sockaddr->ipaddr_ptr, buflen < len ? buflen : len);
+-        return APR_SUCCESS;
++        const char *ptr = sockaddr->ipaddr_ptr;
++        apr_size_t len = apr_cpystrn(buf, ptr, buflen) - buf;
++        /* assumes that sockaddr->ipaddr_ptr is nul terminated */
++        return ptr[len] ? APR_ENOSPC : APR_SUCCESS;
+     }
+ #endif
+ 
+     if (!apr_inet_ntop(sockaddr->family, sockaddr->ipaddr_ptr, buf, buflen)) {
+         return APR_ENOSPC;
+     }
+ 
+ #if APR_HAVE_IPV6
+     if (sockaddr->family == AF_INET6 
+         && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)sockaddr->ipaddr_ptr)
+         && buflen > strlen("::ffff:")) {
+         /* This is an IPv4-mapped IPv6 address; drop the leading
+          * part of the address string so we're left with the familiar
+          * IPv4 format.
+          */
+         memmove(buf, buf + strlen("::ffff:"),
+                 strlen(buf + strlen("::ffff:"))+1);
+     }
+ 
+     /* ensure NUL termination if the buffer is too short */
+     buf[buflen-1] = '\0';
+ 
+ #ifdef HAVE_IF_INDEXTONAME
+     /* Append scope name for link-local addresses. */
+     if (sockaddr->family == AF_INET6
+         && IN6_IS_ADDR_LINKLOCAL((struct in6_addr *)sockaddr->ipaddr_ptr)) {
+         char scbuf[IF_NAMESIZE], *p = buf + strlen(buf);
+ 
+         if (if_indextoname(sockaddr->sa.sin6.sin6_scope_id, scbuf) == scbuf) {
+             /* Space check, need room for buf + '%' + scope + '\0'.
+              * Assert: buflen >= strlen(buf) + strlen(scbuf) + 2
+              * Equiv:  buflen >= (p-buf) + strlen(buf) + 2
+              * Thus, fail in inverse condition: */
+             if (buflen < strlen(scbuf) + (p - buf) + 2) {
+                 return APR_ENOSPC;
+             }
+             *p++ = '%';
+             memcpy(p, scbuf, strlen(scbuf) + 1);
+         }
+     }    
+ #endif /* HAVE_IF_INDEXTONAME */
+ #endif /* APR_HAVE_IPV6 */
+ 
+     return APR_SUCCESS;
+ }
+ 
+
+[FUNC] **new** commit d77a576daf76df4ea5c175ea156ade0ed7f844f1
+Date:   Wed Jan 19 14:15:49 2022 +0000
+
+    apr_thread: Use compiler's TLS to track the current apr_thread_t's pointer.
+    
+    All modern compilers provide a Thread Local Storage keyword that allows to
+    store per-thread data efficiently (C++11 's thread_local, C11's _Thread_local,
+    gcc/clang's __thread or MSVC's __declspec(thread)).
+    
+    Use that to have an apr_thread_t pointer associated with each thread created
+    by apr_thread_create() or any native thread (like the process' initial thread)
+    that registered itself with the new apr_thread_current_create() function.
+    
+    This mechanism allows to implement apr_thread_current() quite efficiently, if
+    available, otherwise the function returns NULL.
+    
+    If available APR_HAS_THREAD_LOCAL is #define'd to 1 and the APR_THREAD_LOCAL
+    macro is the keyword usable to register TLS variables natively.
+    Both APR_HAS_THREAD_LOCAL and APR_THREAD_LOCAL are #undef'ined if the compiler
+    does not provide the mechanism.
+    This allows to test for the functionality at compile time.
+    
+    When APR_HAS_THREAD_LOCAL, the user can load his/her own TLS data with:
+        apr_thread_data_get(&my_data, my_key, apr_thread_current());
+    
+    and store them with:
+        apr_thread_data_set(my_data, my_key, my_data_cleanup,
+                            apr_thread_current());
+    
+    which can be nice to avoid the proliferation of native TLS keys.
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1897207 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/threadproc/unix/thread.c b/threadproc/unix/thread.c
+--- a/threadproc/unix/thread.c
++++ b/threadproc/unix/thread.c
+@@ -197,10 +210,30 @@
++APR_DECLARE(apr_status_t) apr_thread_create(apr_thread_t **new,
++                                            apr_threadattr_t *attr,
++                                            apr_thread_start_t func,
++                                            void *data,
++                                            apr_pool_t *pool)
++{
++    apr_status_t stat;
++    pthread_attr_t *temp;
++
++    stat = alloc_thread(new, attr, func, data, pool);
++    if (stat != APR_SUCCESS) {
++        return stat;
++    }
++
+     if (attr)
+         temp = &attr->attr;
+     else
+         temp = NULL;
+ 
+     if ((stat = pthread_create((*new)->td, temp, dummy_worker, (*new)))) {
+ #ifdef HAVE_ZOS_PTHREADS
+         stat = errno;
+ #endif
+-        apr_pool_destroy(p);
++        apr_pool_destroy((*new)->pool);
++        return stat;
++    }
++
++    return APR_SUCCESS;
++}
++
+
+[FUNC] **new** commit ea8d9ad623550b3ca466e272c8738002d2e0b088
+Date:   Wed Jan 19 11:27:35 2022 +0000
+
+    apr_thread: Allocate the apr_thread_t struct on the thread's pool.
+    
+    apr_thread_create() was allocating the created apr_thread_t on the given pool,
+    which caused e.g. short-living threads to leak memory on that pool without a
+    way to clear it (while some threads are still running).
+    
+    Change this by allocating the apr_thread_t on the thread's pool itself, which
+    is safe in the implementations of all archs because none uses the apr_thread_t
+    after the thread exits, and it's safe for the users provided they don't use the
+    apr_thread_t for detached threads or for attached threads after the call to
+    apr_thread_join(). These are hardly new requirements though.
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1897197 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/threadproc/unix/thread.c b/threadproc/unix/thread.c
+--- a/threadproc/unix/thread.c
++++ b/threadproc/unix/thread.c
+@@ -195,10 +197,10 @@
+     if (attr)
+         temp = &attr->attr;
+     else
+         temp = NULL;
+ 
+     if ((stat = pthread_create((*new)->td, temp, dummy_worker, (*new)))) {
+ #ifdef HAVE_ZOS_PTHREADS
+         stat = errno;
+ #endif
+-        apr_pool_destroy((*new)->pool);
++        apr_pool_destroy(p);
+
+[CORR] **new** commit 7a52a7c060ebb42f6e83505755b49bc1e1acd183
+Date:   Tue Jan 18 17:43:10 2022 +0000
+
+    apr_thread: Follow up to r1884078: Unmanaged pools for attached threads too.
+    
+    r1884078 fixed lifetime issues with detached threads by using unmanaged pool
+    destroyed by the thread itself on exit, with no binding to the parent pool.
+    
+    This commit makes use of unmanaged pools for attached threads too, they needed
+    their own allocator anyway due to apr_thread_detach() being callable anytime
+    later. apr__pool_unmanage() was a hack to detach a subpool from its parent, but
+    if a subpool needs its own allocator for this to work correctly there is no
+    point in creating a subpool for threads (no memory reuse on destroy for short
+    living threads for instance).
+    
+    Since an attached thread has its own lifetime now, apr_thread_join() must be
+    called to free its resources/pool, though it's no different than before when
+    destroying the parent pool was UB if the thread was still running (i.e.  not
+    joined yet).
+    
+    Let's acknoledge that threads want no binding with the pool passed to them at
+    creation time, besides the abort_fn which they can steal :)
+    
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1897179 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/threadproc/unix/thread.c b/threadproc/unix/thread.c
+--- a/threadproc/unix/thread.c
++++ b/threadproc/unix/thread.c
+@@ -208,13 +195,10 @@
+     if (attr)
+         temp = &attr->attr;
+     else
+         temp = NULL;
+ 
+-    if ((stat = pthread_create((*new)->td, temp, dummy_worker, (*new))) == 0) {
+-        return APR_SUCCESS;
+-    }
+-    else {
++    if ((stat = pthread_create((*new)->td, temp, dummy_worker, (*new)))) {
+ #ifdef HAVE_ZOS_PTHREADS
+         stat = errno;
+ #endif
+-
++        apr_pool_destroy((*new)->pool);
+
+commit 17f630750e9e5a40872d8c8c3a48622ed9244d53
+Date:   Tue Mar 2 00:37:18 2021 +0000
+
+    Align apr_mmap()ing offset to a page boundary.  PR 65158.
+    
+    This is requirement for unix systems, and otherwise can cause failures or
+    undefined behaviour with some filesystems.
+    
+    Add apr_mmap_t->poffset on unixes to track the offset to the previous page,
+    relative to the user requested/actual offset. This allows ->mm and ->size to
+    still point to the actual data, while munmap() still deletes the full range
+    from the start of the page.
+    
+    Tests updated accordingly.
+    
+    
+    git-svn-id: https://svn.apache.org/repos/asf/apr/apr/trunk@1887060 13f79535-47bb-0310-9956-ffa450edef68
+
+diff --git a/mmap/unix/mmap.c b/mmap/unix/mmap.c
+--- a/mmap/unix/mmap.c
++++ b/mmap/unix/mmap.c
+@@ -45,29 +50,29 @@
+ static apr_status_t mmap_cleanup(void *themmap)
+ {
+     apr_mmap_t *mm = themmap;
+     apr_mmap_t *next = APR_RING_NEXT(mm,link);
+     int rv = 0;
+ 
+     /* we no longer refer to the mmaped region */
+     APR_RING_REMOVE(mm,link);
+     APR_RING_NEXT(mm,link) = NULL;
+     APR_RING_PREV(mm,link) = NULL;
+ 
+     if (next != mm) {
+         /* more references exist, so we're done */
+         return APR_SUCCESS;
+     }
+ 
+ #ifdef BEOS
+     rv = delete_area(mm->area);
+ #else
+-    rv = munmap(mm->mm, mm->size);
++    rv = munmap((char *)mm->mm - mm->poffset, mm->size + mm->poffset);
+ #endif
+     mm->mm = (void *)-1;
+ 
+     if (rv == 0) {
+         return APR_SUCCESS;
+     }
+     return errno;
+ }
+ 
+
